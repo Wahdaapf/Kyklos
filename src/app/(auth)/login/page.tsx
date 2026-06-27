@@ -2,15 +2,48 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { AuthShell } from "@/components/auth-shell";
-import { Mail, Lock, Eye, EyeOff } from "lucide-react";
+import { Mail, Lock, Eye, EyeOff, Loader2 } from "lucide-react";
+import { supabase } from "@/lib/supabase/client";
 
 export default function LoginPage() {
   const [showPw, setShowPw] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
+  const router = useRouter();
+
+  const handleLogin = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setLoading(true);
+    setErrorMsg("");
+
+    const formData = new FormData(e.currentTarget);
+    const email = formData.get("email") as string;
+    const password = formData.get("password") as string;
+
+    try {
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (error) {
+        setErrorMsg(error.message);
+      } else {
+        router.push("/dashboard");
+        router.refresh();
+      }
+    } catch (err: any) {
+      setErrorMsg(err.message || "Terjadi kesalahan saat masuk.");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <AuthShell
@@ -25,18 +58,20 @@ export default function LoginPage() {
         </>
       }
     >
-      <form
-        className="space-y-5"
-        onSubmit={(e) => {
-          e.preventDefault();
-        }}
-      >
+      <form className="space-y-5" onSubmit={handleLogin}>
+        {errorMsg && (
+          <div className="rounded-xl bg-red-50 border border-red-200 p-3.5 text-xs font-medium text-red-700">
+            {errorMsg}
+          </div>
+        )}
+
         <div className="space-y-2">
           <Label htmlFor="email">Email</Label>
           <div className="relative">
             <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
             <Input
               id="email"
+              name="email"
               type="email"
               required
               placeholder="nama@komunitas.id"
@@ -56,6 +91,7 @@ export default function LoginPage() {
             <Lock className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
             <Input
               id="password"
+              name="password"
               type={showPw ? "text" : "password"}
               required
               placeholder="Minimal 8 karakter"
@@ -73,14 +109,21 @@ export default function LoginPage() {
         </div>
 
         <div className="flex items-center gap-2">
-          <Checkbox id="remember" />
-          <Label htmlFor="remember" className="text-sm font-normal text-zinc-500">
+          <Checkbox id="remember" name="remember" />
+          <Label htmlFor="remember" className="text-sm font-normal text-zinc-500 font-sans cursor-pointer">
             Ingat saya di perangkat ini
           </Label>
         </div>
 
-        <Button type="submit" className="h-11 w-full rounded-xl text-base">
-          Masuk
+        <Button type="submit" disabled={loading} className="h-11 w-full rounded-xl text-base">
+          {loading ? (
+            <>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              Masuk...
+            </>
+          ) : (
+            "Masuk"
+          )}
         </Button>
 
         <div className="relative py-1 text-center">

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
+import { AuthRedirect } from "@/components/auth-redirect";
 import { Card } from "@/components/ui/card";
 import {
   Wallet,
@@ -380,6 +381,7 @@ function Footer() {
 export default function Landing() {
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-900">
+      <AuthRedirect />
       <Nav />
       <main>
         <Hero />
