@@ -48,6 +48,7 @@ interface Community {
   primaryColor: string; // Hex color code
   description: string;
   logoName?: string;
+  inviteCode?: string;
 }
 
 interface Pocket {
@@ -106,6 +107,7 @@ const DEFAULT_COMMUNITIES: Community[] = [
     logoColor: "bg-emerald-600",
     primaryColor: "#059669", // emerald-600
     description: "Komunitas kerukunan tetangga RT 01 Kelurahan Makmur Sejahtera.",
+    inviteCode: "RT-01-CODE",
   },
   {
     id: "arisan-melati",
@@ -115,6 +117,7 @@ const DEFAULT_COMMUNITIES: Community[] = [
     logoColor: "bg-violet-600",
     primaryColor: "#7c3aed", // violet-600
     description: "Arisan rutin keluarga besar Melati putaran tahun 2026.",
+    inviteCode: "MELATI-6",
   },
   {
     id: "alumni-sma1",
@@ -124,6 +127,7 @@ const DEFAULT_COMMUNITIES: Community[] = [
     logoColor: "bg-blue-600",
     primaryColor: "#2563eb", // blue-600
     description: "Ikatan Alumni SMA Negeri 1 Angkatan Reuni Akbar.",
+    inviteCode: "ALUMNI-1",
   },
 ];
 
@@ -434,6 +438,7 @@ export default function DashboardPage() {
                 primaryColor: c.primary_color || "#6366f1",
                 description: c.description || "",
                 logoName: c.logo_url || undefined,
+                inviteCode: c.invite_code || undefined,
               };
             });
 
@@ -654,6 +659,7 @@ export default function DashboardPage() {
         primaryColor: newCommData.primary_color || "#6366f1",
         description: newCommData.description || "",
         logoName: newCommData.logo_url || undefined,
+        inviteCode: newCommData.invite_code || undefined,
       };
 
       const mappedPockets: Pocket[] = (insertedPockets || []).map((p: any) => ({
@@ -779,6 +785,7 @@ export default function DashboardPage() {
         primaryColor: targetComm.primary_color || "#6366f1",
         description: targetComm.description || "",
         logoName: targetComm.logo_url || undefined,
+        inviteCode: targetComm.invite_code || undefined,
       };
 
       setCommunities([...communities, newComm]);
@@ -1212,12 +1219,15 @@ export default function DashboardPage() {
 
   const handleCopyInviteCode = () => {
     if (!activeCommunity) return;
-    const mockInviteCode = activeCommunity.primaryColor.startsWith("#")
-      ? `${activeCommunity.name.substring(0, 4).toUpperCase().replace(/\s+/g, "")}-CODE`
-      : activeCommunity.primaryColor;
+    const realCode = activeCommunity.inviteCode;
     
-    navigator.clipboard.writeText(mockInviteCode);
-    alert(`Kode undangan "${mockInviteCode}" berhasil disalin! Bagikan ke warga.`);
+    if (!realCode) {
+      alert("Gagal menyalin kode undangan: kode tidak ditemukan!");
+      return;
+    }
+    
+    navigator.clipboard.writeText(realCode);
+    alert(`Kode undangan "${realCode}" berhasil disalin! Bagikan ke warga.`);
   };
 
   const runArisanKocok = async () => {
