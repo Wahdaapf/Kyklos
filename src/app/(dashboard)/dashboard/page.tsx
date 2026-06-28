@@ -649,6 +649,63 @@ export default function DashboardPage() {
         console.error("Gagal inisialisasi kantong dana:", pocketError);
       }
 
+      // Insert dues bill for the creator if recurring dues is enabled
+      if (initDues) {
+        let recurringDuesPocketId = null;
+
+        // Try to find it in the recently inserted pockets
+        if (insertedPockets) {
+          const found = insertedPockets.find((p: any) =>
+            p.name.toLowerCase().includes("recurring dues")
+          );
+          if (found) {
+            recurringDuesPocketId = found.id;
+          }
+        }
+
+        // If not found in memory, query from the database as a fallback
+        if (!recurringDuesPocketId) {
+          const { data: dbPockets } = await supabase
+            .from("fund_pockets")
+            .select("id, name")
+            .eq("community_id", newCommData.id);
+
+          if (dbPockets) {
+            const found = dbPockets.find((p: any) =>
+              p.name.toLowerCase().includes("recurring dues")
+            );
+            if (found) {
+              recurringDuesPocketId = found.id;
+            }
+          }
+        }
+
+        if (recurringDuesPocketId) {
+          const now = new Date();
+          const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+          const year = lastDay.getFullYear();
+          const month = String(lastDay.getMonth() + 1).padStart(2, "0");
+          const date = String(lastDay.getDate()).padStart(2, "0");
+          const dueDateString = `${year}-${month}-${date}`;
+
+          const { error: duesBillError } = await supabase
+            .from("dues_bills")
+            .insert({
+              community_id: newCommData.id,
+              profile_id: currentUser.id,
+              title: "Iuran Wajib",
+              amount: parseFloat(newCommDuesAmount) || 0,
+              due_date: dueDateString,
+              status: "unpaid",
+              pocket_id: recurringDuesPocketId,
+            });
+
+          if (duesBillError) {
+            console.error("Gagal mencatat tagihan iuran awal:", duesBillError);
+          }
+        }
+      }
+
       // 5. Update local states
       const newComm: Community = {
         id: newCommData.id,
@@ -737,6 +794,55 @@ export default function DashboardPage() {
         }
         alert(`Gagal bergabung: ${joinError.message}`);
         return;
+      }
+
+      // Check if there are any existing dues bills for this community with due date set to the last day of the current month
+      const now = new Date();
+      const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+      const year = lastDay.getFullYear();
+      const month = String(lastDay.getMonth() + 1).padStart(2, "0");
+      const date = String(lastDay.getDate()).padStart(2, "0");
+      const dueDateString = `${year}-${month}-${date}`;
+
+      const { data: existingBills } = await supabase
+        .from("dues_bills")
+        .select("*")
+        .eq("community_id", targetComm.id)
+        .eq("due_date", dueDateString);
+
+      if (existingBills && existingBills.length > 0) {
+        // Find the recurring dues pocket for this community
+        const { data: dbPockets } = await supabase
+          .from("fund_pockets")
+          .select("id, name")
+          .eq("community_id", targetComm.id);
+
+        let recurringDuesPocketId = null;
+        if (dbPockets) {
+          const found = dbPockets.find((p: any) =>
+            p.name.toLowerCase().includes("recurring dues")
+          );
+          if (found) {
+            recurringDuesPocketId = found.id;
+          }
+        }
+
+        const refBill = existingBills[0];
+        const { error: duesBillError } = await supabase
+          .from("dues_bills")
+          .insert({
+            community_id: targetComm.id,
+            profile_id: currentUser.id,
+            title: refBill.title || "Iuran Wajib",
+            amount: refBill.amount || 50000,
+            due_date: dueDateString,
+            status: "unpaid",
+            pocket_id: recurringDuesPocketId || refBill.pocket_id,
+          });
+
+        if (duesBillError) {
+          console.error("Gagal mencatat tagihan iuran awal saat bergabung:", duesBillError);
+        }
       }
 
       // 3. Fetch pockets for this joined community
