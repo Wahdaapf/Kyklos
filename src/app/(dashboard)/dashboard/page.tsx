@@ -2836,6 +2836,18 @@ export default function DashboardPage() {
 
               {/* Navigation Menu */}
               <nav className="space-y-1">
+                {/* Derived: show Arisan only if an arisan pocket exists */}
+                {(() => {
+                  const communityPockets = pockets[selectedCommunityId || ""] || [];
+                  const hasArisanPocket = communityPockets.some((p) =>
+                    p.name.toLowerCase().includes("arisan")
+                  );
+                  const hasEventPocket = communityPockets.some((p) =>
+                    p.name.toLowerCase().includes("event") || p.name.toLowerCase().includes("acara")
+                  );
+                  return (
+                    <>
+
                 <button
                   onClick={() => { setActiveTab("dashboard"); setMobileMenuOpen(false); }}
                   className="flex w-full items-center gap-3 px-3 py-2 text-sm font-semibold rounded-xl transition-all"
@@ -2862,18 +2874,20 @@ export default function DashboardPage() {
                   Dompet & Iuran
                 </button>
 
-                <button
-                  onClick={() => { setActiveTab("arisan"); setMobileMenuOpen(false); }}
-                  className="flex w-full items-center gap-3 px-3 py-2 text-sm font-semibold rounded-xl transition-all"
-                  style={{
-                    backgroundColor: activeTab === "arisan" ? `${activeCommunity.primaryColor}10` : "transparent",
-                    color: activeTab === "arisan" ? activeCommunity.primaryColor : "#52525b",
-                    borderLeft: activeTab === "arisan" ? `3px solid ${activeCommunity.primaryColor}` : "none",
-                  }}
-                >
-                  <Trophy className="h-4.5 w-4.5" />
-                  Arisan
-                </button>
+                      {hasArisanPocket && (
+                        <button
+                          onClick={() => { setActiveTab("arisan"); setMobileMenuOpen(false); }}
+                          className="flex w-full items-center gap-3 px-3 py-2 text-sm font-semibold rounded-xl transition-all"
+                          style={{
+                            backgroundColor: activeTab === "arisan" ? `${activeCommunity.primaryColor}10` : "transparent",
+                            color: activeTab === "arisan" ? activeCommunity.primaryColor : "#52525b",
+                            borderLeft: activeTab === "arisan" ? `3px solid ${activeCommunity.primaryColor}` : "none",
+                          }}
+                        >
+                          <Trophy className="h-4.5 w-4.5" />
+                          Arisan
+                        </button>
+                      )}
 
                 <button
                   onClick={() => { setActiveTab("discussion"); setMobileMenuOpen(false); }}
@@ -2888,31 +2902,36 @@ export default function DashboardPage() {
                   Forum Diskusi
                 </button>
 
-                <button
-                  onClick={() => { setActiveTab("events"); setMobileMenuOpen(false); }}
-                  className="flex w-full items-center gap-3 px-3 py-2 text-sm font-semibold rounded-xl transition-all"
-                  style={{
-                    backgroundColor: activeTab === "events" ? `${activeCommunity.primaryColor}10` : "transparent",
-                    color: activeTab === "events" ? activeCommunity.primaryColor : "#52525b",
-                    borderLeft: activeTab === "events" ? `3px solid ${activeCommunity.primaryColor}` : "none",
-                  }}
-                >
-                  <Calendar className="h-4.5 w-4.5" />
-                  Agenda & Kegiatan
-                </button>
+                      {hasEventPocket && (
+                        <button
+                          onClick={() => { setActiveTab("events"); setMobileMenuOpen(false); }}
+                          className="flex w-full items-center gap-3 px-3 py-2 text-sm font-semibold rounded-xl transition-all"
+                          style={{
+                            backgroundColor: activeTab === "events" ? `${activeCommunity.primaryColor}10` : "transparent",
+                            color: activeTab === "events" ? activeCommunity.primaryColor : "#52525b",
+                            borderLeft: activeTab === "events" ? `3px solid ${activeCommunity.primaryColor}` : "none",
+                          }}
+                        >
+                          <Calendar className="h-4.5 w-4.5" />
+                          Agenda & Kegiatan
+                        </button>
+                      )}
 
-                <button
-                  onClick={() => { setActiveTab("members"); setMobileMenuOpen(false); }}
-                  className="flex w-full items-center gap-3 px-3 py-2 text-sm font-semibold rounded-xl transition-all"
-                  style={{
-                    backgroundColor: activeTab === "members" ? `${activeCommunity.primaryColor}10` : "transparent",
-                    color: activeTab === "members" ? activeCommunity.primaryColor : "#52525b",
-                    borderLeft: activeTab === "members" ? `3px solid ${activeCommunity.primaryColor}` : "none",
-                  }}
-                >
-                  <Users className="h-4.5 w-4.5" />
-                  Anggota
-                </button>
+                      <button
+                      onClick={() => { setActiveTab("members"); setMobileMenuOpen(false); }}
+                        className="flex w-full items-center gap-3 px-3 py-2 text-sm font-semibold rounded-xl transition-all"
+                        style={{
+                          backgroundColor: activeTab === "members" ? `${activeCommunity.primaryColor}10` : "transparent",
+                          color: activeTab === "members" ? activeCommunity.primaryColor : "#52525b",
+                          borderLeft: activeTab === "members" ? `3px solid ${activeCommunity.primaryColor}` : "none",
+                        }}
+                      >
+                        <Users className="h-4.5 w-4.5" />
+                        Anggota
+                      </button>
+                    </>
+                  );
+                })()}
               </nav>
             </div>
 
@@ -3341,7 +3360,10 @@ export default function DashboardPage() {
                               );
                             })()}
                           </div>
-                          {myRole === "Admin" && shouldShowCreateDuesButton() && (
+                          {myRole === "Admin" && shouldShowCreateDuesButton() &&
+                            (pockets[activeCommunity.id] || []).some((p) =>
+                              p.name.toLowerCase().includes("recurring dues") || p.name.toLowerCase().includes("iuran wajib")
+                            ) && (
                             <Button
                               onClick={handleCreateMonthlyDues}
                               className="rounded-xl text-xs font-bold text-white hover:opacity-90"
