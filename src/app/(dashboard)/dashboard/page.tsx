@@ -127,7 +127,7 @@ interface Member {
   name: string;
   phone: string;
   role: "Admin" | "Member";
-  iuranStatus: "Lunas" | "Menunggak";
+  iuranStatus: "Lunas" | "Menunggak" | "Belum Bayar";
 }
 
 // --- Default Data ---
@@ -2425,10 +2425,14 @@ export default function DashboardPage() {
   
   // Dynamic mapped members status based on real unpaid dues bills
   const mappedMembersWithStatus = activeCommunity ? activeCommunityMembers.map((m) => {
-    const hasUnpaid = communityDuesBills.some((bill) => bill.profile_id === m.id);
+    const memberBills = communityDuesBills.filter((bill) => bill.profile_id === m.id);
+    const hasUnpaid = memberBills.length > 0;
+    const hasOverdue = memberBills.some((bill) =>
+      bill.due_date && new Date(bill.due_date).getTime() < new Date().setHours(0, 0, 0, 0)
+    );
     return {
       ...m,
-      iuranStatus: hasUnpaid ? ("Menunggak" as const) : ("Lunas" as const),
+      iuranStatus: hasOverdue ? ("Menunggak" as const) : hasUnpaid ? ("Belum Bayar" as const) : ("Lunas" as const),
     };
   }) : [];
 
@@ -3133,13 +3137,33 @@ export default function DashboardPage() {
                         <div>
                           <h3 className="text-sm font-bold text-zinc-900">Status Saya</h3>
                           <p className="text-xs text-zinc-400 mt-0.5">Iuran Bulanan</p>
-                        </div>
-                        <div className="mt-4 flex items-center justify-between gap-4">
-                          {myIuranPaid ? (
+                                <div className="mt-4 flex items-center justify-between gap-4">
+                          {myMemberInfo?.iuranStatus === "Lunas" ? (
                             <div className="flex items-center gap-2 text-emerald-600 bg-emerald-50 border border-emerald-100 rounded-xl px-3 py-2 w-full text-xs font-semibold">
                               <CheckCircle2 className="h-4 w-4" />
                               <span>Lunas</span>
                             </div>
+                          ) : myMemberInfo?.iuranStatus === "Menunggak" ? (
+                            <>
+                              <div className="flex items-center gap-2 text-red-750 bg-red-50 border border-red-100 rounded-xl px-3 py-2 text-xs font-semibold shrink-0">
+                                <Clock className="h-4 w-4" />
+                                <span>Menunggak</span>
+                              </div>
+                              <Button
+                                size="sm"
+                                className="rounded-xl text-xs font-bold text-white hover:opacity-90 shrink-0"
+                                style={{ backgroundColor: activeCommunity.primaryColor }}
+                                onClick={() => {
+                                  const overdueBill = myUnpaidDues.find(bill =>
+                                    bill.due_date && new Date(bill.due_date).getTime() < new Date().setHours(0, 0, 0, 0)
+                                  );
+                                  setSelectedBillToPay(overdueBill || myUnpaidDues[0]);
+                                  setIsPaymentOpen(true);
+                                }}
+                              >
+                                Bayar Kas
+                              </Button>
+                            </>
                           ) : (
                             <>
                               <div className="flex items-center gap-2 text-amber-700 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2 text-xs font-semibold shrink-0">
@@ -3150,13 +3174,16 @@ export default function DashboardPage() {
                                 size="sm"
                                 className="rounded-xl text-xs font-bold text-white hover:opacity-90 shrink-0"
                                 style={{ backgroundColor: activeCommunity.primaryColor }}
-                                onClick={() => setIsPaymentOpen(true)}
+                                onClick={() => {
+                                  setSelectedBillToPay(myUnpaidDues[0]);
+                                  setIsPaymentOpen(true);
+                                }}
                               >
                                 Bayar Kas
                               </Button>
                             </>
                           )}
-                        </div>
+                        </div>                  </div>
                       </Card>
                     </div>
                   </div>
@@ -3445,9 +3472,18 @@ export default function DashboardPage() {
                                         </span>
                                       </td>
                                       <td className="py-3 px-2">
-                                        <span className="inline-block px-2.5 py-0.5 rounded-full text-xs font-bold bg-red-50 text-red-700 border border-red-100">
-                                          Menunggak (Rp {Number(bill.amount).toLocaleString("id-ID")})
-                                        </span>
+                                        {(() => {
+                                          const isOverdue = bill.due_date ? new Date(bill.due_date).getTime() < new Date().setHours(0, 0, 0, 0) : false;
+                                          return isOverdue ? (
+                                            <span className="inline-block px-2.5 py-0.5 rounded-full text-xs font-bold bg-red-50 text-red-700 border border-red-100">
+                                              Menunggak (Rp {Number(bill.amount).toLocaleString("id-ID")})
+                                            </span>
+                                          ) : (
+                                            <span className="inline-block px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-50 text-amber-700 border border-amber-100">
+                                              Belum Bayar (Rp {Number(bill.amount).toLocaleString("id-ID")})
+                                            </span>
+                                          );
+                                        })()}
                                       </td>
                                       {myRole === "Admin" && (
                                         <td className="py-3 px-2 text-right space-x-3">
