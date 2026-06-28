@@ -358,7 +358,9 @@ export default function DashboardPage() {
 
   // Other form states
   const [joinCode, setJoinCode] = useState("");
+  const [newPocketType, setNewPocketType] = useState("");
   const [newPocketName, setNewPocketName] = useState("");
+  const [newPocketDuesAmount, setNewPocketDuesAmount] = useState("50000");
   const [newPocketBalance, setNewPocketBalance] = useState("");
   const [newPocketTone, setNewPocketTone] = useState<"primary" | "accent" | "warning">("primary");
 
@@ -1497,17 +1499,28 @@ export default function DashboardPage() {
 
   const handleAddPocket = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedCommunityId || !newPocketName.trim()) return;
+    if (!selectedCommunityId || !newPocketType) return;
 
     try {
-      const pocketBalVal = parseFloat(newPocketBalance) || 0;
+      const pocketBalVal = 0;
+      let finalPocketName = "";
+      const isDuesPocket = newPocketType === "iuran";
+
+      if (newPocketType === "iuran") {
+        const parsedDuesAmount = parseInt(newPocketDuesAmount) || 50000;
+        finalPocketName = `Recurring Dues (Iuran Wajib - Rp ${parsedDuesAmount.toLocaleString("id-ID")}/Bulan)`;
+      } else if (newPocketType === "arisan") {
+        finalPocketName = "Arisan (Dana Putaran)";
+      } else if (newPocketType === "event") {
+        finalPocketName = "Event Fund (Dana Khusus Acara)";
+      }
 
       // Insert pocket in Supabase
       const { data: newPocketData, error: pocketError } = await supabase
         .from("fund_pockets")
         .insert({
           community_id: selectedCommunityId,
-          name: newPocketName,
+          name: finalPocketName,
           balance: pocketBalVal,
         })
         .select()
@@ -1521,8 +1534,8 @@ export default function DashboardPage() {
       const newPocket: Pocket = {
         id: newPocketData.id,
         name: newPocketData.name,
-        balance: Number(newPocketData.balance),
-        tone: newPocketTone,
+        balance: 0,
+        tone: "primary",
       };
 
       setPockets({
@@ -1530,45 +1543,52 @@ export default function DashboardPage() {
         [selectedCommunityId]: [...(pockets[selectedCommunityId] || []), newPocket],
       });
 
-      if (newPocket.balance > 0) {
-        // Record initial balance transaction
-        const { data: initTx } = await supabase
-          .from("transactions")
-          .insert({
-            community_id: selectedCommunityId,
-            pocket_id: newPocket.id,
-            profile_id: currentUser?.id,
-            type: "income",
-            amount: newPocket.balance,
-            description: `Saldo Awal — ${newPocket.name}`,
-            status: "success",
-          })
-          .select(`
-            *,
-            fund_pockets (name),
-            profiles (full_name)
-          `)
-          .single();
+      // Automatically create dues bills for all members if a recurring dues pocket is added
+      if (isDuesPocket) {
+        const parsedDuesAmount = parseInt(newPocketDuesAmount) || 50000;
 
-        if (initTx) {
-          const newTx: Transaction = {
-            id: initTx.id,
-            name: initTx.description,
-            pocket: initTx.fund_pockets?.name || newPocket.name,
-            amount: Number(initTx.amount),
-            type: "in",
-            date: "Hari ini",
-            author: profileName,
-          };
-          setTransactions({
-            ...transactions,
-            [selectedCommunityId]: [newTx, ...(transactions[selectedCommunityId] || [])],
-          });
+        // Fetch all community members
+        const { data: cms } = await supabase
+          .from("community_members")
+          .select("profile_id")
+          .eq("community_id", selectedCommunityId);
+
+        if (cms && cms.length > 0) {
+          const now = new Date();
+          const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+          const year = lastDay.getFullYear();
+          const month = String(lastDay.getMonth() + 1).padStart(2, "0");
+          const date = String(lastDay.getDate()).padStart(2, "0");
+          const dueDateString = `${year}-${month}-${date}`;
+
+          const billsToInsert = cms.map((cm) => ({
+            community_id: selectedCommunityId,
+            profile_id: cm.profile_id,
+            pocket_id: newPocket.id,
+            title: "Iuran Wajib",
+            amount: parsedDuesAmount,
+            due_date: dueDateString,
+            status: "unpaid",
+          }));
+
+          const { error: duesBillError } = await supabase
+            .from("dues_bills")
+            .insert(billsToInsert);
+
+          if (duesBillError) {
+            console.error("Gagal mencatat tagihan iuran awal:", duesBillError);
+          } else {
+            // Refresh dues bills data locally
+            await fetchLastDuesBill(selectedCommunityId, currentUser?.id);
+            await fetchCommunityDuesBills(selectedCommunityId);
+            await fetchMyUnpaidDues(selectedCommunityId, currentUser?.id);
+          }
         }
       }
 
       setNewPocketName("");
       setNewPocketBalance("");
+      setNewPocketDuesAmount("50000");
       setNewPocketTone("primary");
       setIsAddPocketOpen(false);
     } catch (err: any) {
@@ -3259,9 +3279,22 @@ export default function DashboardPage() {
                       <div className="space-y-4">
                         <div className="flex items-center justify-between">
                           <h3 className="text-base font-bold text-zinc-900">Daftar Kantong Dana (Pockets)</h3>
-                          {myRole === "Admin" && (
+                          {myRole === "Admin" && (pockets[activeCommunity.id] || []).length < 4 && (
                             <Button
-                              onClick={() => setIsAddPocketOpen(true)}
+                              onClick={() => {
+                                const communityPockets = pockets[activeCommunity.id] || [];
+                                const hasArisan = communityPockets.some((p) => p.name.toLowerCase().includes("arisan"));
+                                const hasDues = communityPockets.some((p) => p.name.toLowerCase().includes("dues") || p.name.toLowerCase().includes("iuran"));
+                                const hasEvent = communityPockets.some((p) => p.name.toLowerCase().includes("event") || p.name.toLowerCase().includes("acara"));
+
+                                let firstAvail = "";
+                                if (!hasDues) firstAvail = "iuran";
+                                else if (!hasArisan) firstAvail = "arisan";
+                                else if (!hasEvent) firstAvail = "event";
+
+                                setNewPocketType(firstAvail);
+                                setIsAddPocketOpen(true);
+                              }}
                               className="rounded-xl text-xs font-bold text-white hover:opacity-90"
                               style={{ backgroundColor: activeCommunity.primaryColor }}
                             >
@@ -4708,40 +4741,43 @@ export default function DashboardPage() {
 
             <form onSubmit={handleAddPocket} className="space-y-4">
               <div className="space-y-1.5">
-                <Label htmlFor="pocket-name">Nama Kantong Dana</Label>
-                <Input
-                  id="pocket-name"
-                  required
-                  value={newPocketName}
-                  onChange={(e) => setNewPocketName(e.target.value)}
-                  placeholder="Contoh: Dana Kematian, Kas Rapat, Kas 17an"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label htmlFor="pocket-balance">Saldo Awal (Opsional)</Label>
-                <Input
-                  id="pocket-balance"
-                  type="number"
-                  value={newPocketBalance}
-                  onChange={(e) => setNewPocketBalance(e.target.value)}
-                  placeholder="Mulai dari Rp 0"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label htmlFor="pocket-color">Tema Warna Kantong</Label>
+                <Label htmlFor="pocket-type">Pilih Jenis Kantong Dana</Label>
                 <select
-                  id="pocket-color"
-                  className="flex h-11 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 focus:outline-none focus:ring-1 focus:ring-indigo-650"
-                  value={newPocketTone}
-                  onChange={(e) => setNewPocketTone(e.target.value as any)}
+                  id="pocket-type"
+                  className="flex h-11 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 focus:outline-none focus:ring-1 focus:ring-indigo-650 font-sans"
+                  value={newPocketType}
+                  onChange={(e) => setNewPocketType(e.target.value)}
                 >
-                  <option value="primary">Biru / Ungu Utama</option>
-                  <option value="accent">Teal / Hijau Aksen</option>
-                  <option value="warning">Oranye / Kuning Aksen</option>
+                  {(() => {
+                    const communityPockets = pockets[activeCommunity.id] || [];
+                    const hasArisan = communityPockets.some((p) => p.name.toLowerCase().includes("arisan"));
+                    const hasDues = communityPockets.some((p) => p.name.toLowerCase().includes("dues") || p.name.toLowerCase().includes("iuran"));
+                    const hasEvent = communityPockets.some((p) => p.name.toLowerCase().includes("event") || p.name.toLowerCase().includes("acara"));
+
+                    return (
+                      <>
+                        {!hasDues && <option value="iuran">Iuran Bulanan (Recurring Dues)</option>}
+                        {!hasArisan && <option value="arisan">Arisan (Dana Putaran)</option>}
+                        {!hasEvent && <option value="event">Event Fund (Dana Khusus Acara)</option>}
+                      </>
+                    );
+                  })()}
                 </select>
               </div>
+
+              {newPocketType === "iuran" && (
+                <div className="space-y-1.5 animate-fade-in">
+                  <Label htmlFor="pocket-dues-amount">Nominal Iuran Bulanan (Rp) <span className="text-red-500">*</span></Label>
+                  <Input
+                    id="pocket-dues-amount"
+                    type="number"
+                    required
+                    value={newPocketDuesAmount}
+                    onChange={(e) => setNewPocketDuesAmount(e.target.value)}
+                    placeholder="Contoh: 50000"
+                  />
+                </div>
+              )}
 
               <div className="pt-2">
                 <Button type="submit" className="w-full h-11 rounded-xl text-white font-bold text-sm hover:opacity-90" style={{ backgroundColor: activeCommunity.primaryColor }}>
