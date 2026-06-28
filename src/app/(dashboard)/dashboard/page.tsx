@@ -1394,48 +1394,98 @@ export default function DashboardPage() {
     }
   };
 
-  const handleRSVP = async (eventId: string, rsvp: "yes" | "no" | "maybe") => {
+  const handleRSVP = async (eventId: string, rsvp: "yes" | "no") => {
     if (!selectedCommunityId || !currentUser) return;
 
-    // Map UI values to DB status
-    const dbStatus = rsvp === "yes" ? "attending" : rsvp === "no" ? "absent" : "maybe";
-
-    // Optimistic local update first
     const currentList = getEvents();
+    const ev = currentList.find((e) => e.id === eventId);
+    if (!ev) return;
+
+    // Block re-vote if already answered
+    if (ev.userRSVP !== "none") {
+      Swal.fire({
+        title: "Konfirmasi Sudah Terkunci",
+        text: "Kehadiran kamu sudah tercatat dan tidak dapat diubah.",
+        icon: "info",
+        confirmButtonColor: activeCommunity?.primaryColor || "#6366f1",
+        confirmButtonText: "Mengerti",
+      });
+      return;
+    }
+
+    // Confirm dialog
+    const label = rsvp === "yes" ? "✓ Hadir" : "✗ Tidak Hadir";
+    const confirm = await Swal.fire({
+      title: "Konfirmasi Kehadiran",
+      html: `Kamu akan memilih <strong>${label}</strong> untuk acara <strong>${ev.title}</strong>.<br/><br/><span style="color:#ef4444;font-size:12px">⚠️ Pilihan ini tidak dapat diubah setelah dikonfirmasi.</span>`,
+      icon: "question",
+      showCancelButton: true,
+      confirmButtonColor: rsvp === "yes" ? (activeCommunity?.primaryColor || "#6366f1") : "#ef4444",
+      cancelButtonColor: "#71717a",
+      confirmButtonText: label,
+      cancelButtonText: "Batal",
+    });
+
+    if (!confirm.isConfirmed) return;
+
+    const dbStatus = rsvp === "yes" ? "attending" : "absent";
+
+    // Optimistic local update
     const updatedEvents = currentList.map((e) => {
       if (e.id === eventId) {
-        let yesDiff = 0, noDiff = 0, maybeDiff = 0;
-        if (e.userRSVP === "yes") yesDiff = -1;
-        else if (e.userRSVP === "no") noDiff = -1;
-        else if (e.userRSVP === "maybe") maybeDiff = -1;
-        if (rsvp === "yes") yesDiff += 1;
-        else if (rsvp === "no") noDiff += 1;
-        else if (rsvp === "maybe") maybeDiff += 1;
         return {
           ...e,
           userRSVP: rsvp,
-          rsvpYesCount: Math.max(0, e.rsvpYesCount + yesDiff),
-          rsvpNoCount: Math.max(0, e.rsvpNoCount + noDiff),
-          rsvpMaybeCount: Math.max(0, e.rsvpMaybeCount + maybeDiff),
+          rsvpYesCount: rsvp === "yes" ? e.rsvpYesCount + 1 : e.rsvpYesCount,
+          rsvpNoCount: rsvp === "no" ? e.rsvpNoCount + 1 : e.rsvpNoCount,
         };
       }
       return e;
     });
     setEvents({ ...events, [selectedCommunityId]: updatedEvents });
 
-    // Persist to Supabase
     try {
-      const { error } = await supabase
+      // 1. Save RSVP to DB
+      const { error: rsvpErr } = await supabase
         .from("event_rsvps")
         .upsert(
           { event_id: eventId, profile_id: currentUser.id, status: dbStatus, updated_at: new Date().toISOString() },
           { onConflict: "event_id,profile_id" }
         );
-      if (error) console.error("Error saving RSVP:", error);
+      if (rsvpErr) console.error("Error saving RSVP:", rsvpErr);
+
+      // 2. If attending a paid event, ensure dues_bill exists for this member
+      if (rsvp === "yes" && ev.price && ev.price > 0) {
+        // Check if a bill already exists (admin may have pre-created it)
+        const { data: existingBill } = await supabase
+          .from("dues_bills")
+          .select("id")
+          .eq("community_id", selectedCommunityId)
+          .eq("profile_id", currentUser.id)
+          .ilike("title", `%${ev.title}%`)
+          .maybeSingle();
+
+        if (!existingBill) {
+          const eventDueDate = ev.event_date
+            ? new Date(ev.event_date).toISOString().split("T")[0]
+            : new Date().toISOString().split("T")[0];
+
+          await supabase.from("dues_bills").insert({
+            community_id: selectedCommunityId,
+            profile_id: currentUser.id,
+            title: `Tiket: ${ev.title}`,
+            amount: ev.price,
+            due_date: eventDueDate,
+            status: "unpaid",
+            pocket_id: ev.pocket_id || null,
+          });
+        }
+      }
     } catch (err) {
       console.error("Error in handleRSVP:", err);
     }
   };
+
 
   const handlePaymentSuccess = async () => {
     if (!selectedCommunityId || !currentUser) return;
@@ -3404,54 +3454,81 @@ export default function DashboardPage() {
                             <div className="h-6 w-px bg-zinc-200" />
                             <div>
                               <span className="font-extrabold text-red-500 block text-xs">{ev.rsvpNoCount}</span>
-                              <span className="text-zinc-400 font-semibold uppercase">Absen</span>
-                            </div>
-                            <div className="h-6 w-px bg-zinc-200" />
-                            <div>
-                              <span className="font-extrabold text-amber-600 block text-xs">{ev.rsvpMaybeCount}</span>
-                              <span className="text-zinc-400 font-semibold uppercase">Ragu-Ragu</span>
+                              <span className="text-zinc-400 font-semibold uppercase">Tidak Hadir</span>
                             </div>
                           </div>
 
-                          <div className="pt-3 border-t border-zinc-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 text-xs">
+                          {/* RSVP Actions + Bayar */}
+                          <div className="pt-3 border-t border-zinc-100 space-y-2.5">
                             {ev.status === "done" ? (
                               <span className="text-[10px] text-zinc-400 font-semibold">Telah terlaksana</span>
+                            ) : ev.userRSVP !== "none" ? (
+                              /* Already voted — show locked status */
+                              <div className="space-y-2">
+                                <div className="flex items-center gap-2">
+                                  <span
+                                    className="text-xs font-bold px-3 py-1.5 rounded-xl border"
+                                    style={{
+                                      backgroundColor: ev.userRSVP === "yes" ? `${activeCommunity.primaryColor}15` : "#fee2e2",
+                                      color: ev.userRSVP === "yes" ? activeCommunity.primaryColor : "#ef4444",
+                                      borderColor: ev.userRSVP === "yes" ? `${activeCommunity.primaryColor}40` : "#fca5a5",
+                                    }}
+                                  >
+                                    {ev.userRSVP === "yes" ? "✓ Kamu Hadir" : "✗ Kamu Tidak Hadir"}
+                                  </span>
+                                  <span className="text-[10px] text-zinc-400">🔒 Terkunci</span>
+                                </div>
+                                {/* Bayar button — only when attending a paid event */}
+                                {ev.userRSVP === "yes" && ev.price && ev.price > 0 && (
+                                  <button
+                                    onClick={async () => {
+                                      const result = await Swal.fire({
+                                        title: "Pembayaran Tiket",
+                                        html: `Konfirmasi pembayaran tiket untuk <strong>${ev.title}</strong><br/><br/><span style="font-size:22px;font-weight:900;color:#16a34a">Rp ${ev.price!.toLocaleString("id-ID")}</span>`,
+                                        icon: "info",
+                                        showCancelButton: true,
+                                        confirmButtonColor: activeCommunity.primaryColor,
+                                        cancelButtonColor: "#71717a",
+                                        confirmButtonText: "💳 Bayar Sekarang",
+                                        cancelButtonText: "Nanti",
+                                      });
+                                      if (result.isConfirmed) {
+                                        Swal.fire({ title: "Pembayaran Berhasil!", text: `Tiket ${ev.title} telah terbayar.`, icon: "success", confirmButtonColor: activeCommunity.primaryColor });
+                                      }
+                                    }}
+                                    className="w-full py-2 rounded-xl text-xs font-bold text-white transition-opacity hover:opacity-90"
+                                    style={{ backgroundColor: activeCommunity.primaryColor }}
+                                  >
+                                    💳 Bayar Tiket — Rp {ev.price.toLocaleString("id-ID")}
+                                  </button>
+                                )}
+                              </div>
                             ) : (
+                              /* Not yet voted */
                               <>
-                                <span className="text-zinc-600 font-semibold text-[11px]">Konfirmasi Kehadiran:</span>
+                                <span className="text-zinc-600 font-semibold text-[11px] block">Konfirmasi Kehadiran:</span>
                                 <div className="flex gap-1.5">
                                   <button
                                     onClick={() => handleRSVP(ev.id, "yes")}
-                                    className="px-3.5 py-1.5 rounded-xl text-xs font-bold border transition-all shadow-xs"
+                                    className="flex-1 py-2 rounded-xl text-xs font-bold border transition-all shadow-xs"
                                     style={{
-                                      backgroundColor: ev.userRSVP === "yes" ? activeCommunity.primaryColor : "#ffffff",
-                                      color: ev.userRSVP === "yes" ? "#ffffff" : "#52525b",
-                                      borderColor: ev.userRSVP === "yes" ? activeCommunity.primaryColor : "#e4e4e7",
+                                      backgroundColor: "#ffffff",
+                                      color: "#52525b",
+                                      borderColor: "#e4e4e7",
                                     }}
                                   >
                                     ✓ Hadir
                                   </button>
                                   <button
                                     onClick={() => handleRSVP(ev.id, "no")}
-                                    className="px-3.5 py-1.5 rounded-xl text-xs font-bold border transition-all shadow-xs"
+                                    className="flex-1 py-2 rounded-xl text-xs font-bold border transition-all shadow-xs"
                                     style={{
-                                      backgroundColor: ev.userRSVP === "no" ? "#ef4444" : "#ffffff",
-                                      color: ev.userRSVP === "no" ? "#ffffff" : "#52525b",
-                                      borderColor: ev.userRSVP === "no" ? "#ef4444" : "#e4e4e7",
+                                      backgroundColor: "#ffffff",
+                                      color: "#52525b",
+                                      borderColor: "#e4e4e7",
                                     }}
                                   >
-                                    ✗ Absen
-                                  </button>
-                                  <button
-                                    onClick={() => handleRSVP(ev.id, "maybe")}
-                                    className="px-3.5 py-1.5 rounded-xl text-xs font-bold border transition-all shadow-xs"
-                                    style={{
-                                      backgroundColor: ev.userRSVP === "maybe" ? "#f59e0b" : "#ffffff",
-                                      color: ev.userRSVP === "maybe" ? "#ffffff" : "#52525b",
-                                      borderColor: ev.userRSVP === "maybe" ? "#f59e0b" : "#e4e4e7",
-                                    }}
-                                  >
-                                    ? Ragu
+                                    ✗ Tidak Hadir
                                   </button>
                                 </div>
                               </>
@@ -4050,7 +4127,7 @@ export default function DashboardPage() {
                 <X className="h-5 w-5" />
               </button>
               <h2 className="text-xl font-bold text-zinc-900">Buat Agenda Baru</h2>
-              <p className="text-xs text-zinc-500 mt-0.5 font-sans">Tambahkan kegiatan komunitas, atur tiket, dan hubungkan ke kantong dana.</p>
+              <p className="text-xs text-zinc-500 mt-0.5 font-sans">Tambahkan kegiatan komunitas dan atur tiket untuk anggota.</p>
             </div>
 
             <form onSubmit={handleCreateEvent} className="p-6 space-y-4">
@@ -4106,36 +4183,19 @@ export default function DashboardPage() {
                 />
               </div>
 
-              {/* Biaya & Kantong */}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label htmlFor="event-price">Biaya Tiket (Rp)</Label>
-                  <Input
-                    id="event-price"
-                    type="number"
-                    min="0"
-                    value={newEventPrice}
-                    onChange={(e) => setNewEventPrice(e.target.value)}
-                    placeholder="0 = Gratis"
-                    className="rounded-xl h-10"
-                  />
-                  <p className="text-[10px] text-zinc-400 font-sans">Isi 0 jika gratis</p>
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="event-pocket">Target Kantong Dana</Label>
-                  <select
-                    id="event-pocket"
-                    value={newEventPocketId}
-                    onChange={(e) => setNewEventPocketId(e.target.value)}
-                    className="flex w-full h-10 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-sans"
-                  >
-                    <option value="">— Tidak Ada —</option>
-                    {(pockets[selectedCommunityId || ""] || []).map(p => (
-                      <option key={p.id} value={p.id}>{p.name}</option>
-                    ))}
-                  </select>
-                  <p className="text-[10px] text-zinc-400 font-sans">Untuk Event Fund</p>
-                </div>
+              {/* Biaya Tiket */}
+              <div className="space-y-1.5">
+                <Label htmlFor="event-price">Biaya Tiket (Rp)</Label>
+                <Input
+                  id="event-price"
+                  type="number"
+                  min="0"
+                  value={newEventPrice}
+                  onChange={(e) => setNewEventPrice(e.target.value)}
+                  placeholder="0 = Gratis"
+                  className="rounded-xl h-10"
+                />
+                <p className="text-[10px] text-zinc-400 font-sans">Isi 0 jika acara gratis · Pemasukan tiket otomatis masuk ke Event Fund</p>
               </div>
 
               {/* Preview Info */}
