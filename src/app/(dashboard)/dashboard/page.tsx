@@ -325,7 +325,7 @@ export default function DashboardPage() {
   // --- States ---
   const [communities, setCommunities] = useState<Community[]>([]);
   const [selectedCommunityId, setSelectedCommunityId] = useState<string | null>(null);
-  
+
   // Navigation tabs
   const [activeTab, setActiveTab] = useState<"dashboard" | "wallet" | "arisan" | "discussion" | "events" | "members">("dashboard");
   const [landingTab, setLandingTab] = useState<"communities" | "profile">("communities");
@@ -412,6 +412,8 @@ export default function DashboardPage() {
   const [walletTab, setWalletTab] = useState<"pockets" | "iuran" | "my_iuran">("pockets");
   const [myUnpaidDues, setMyUnpaidDues] = useState<any[]>([]);
   const [communityDuesBills, setCommunityDuesBills] = useState<any[]>([]);
+  const [lastDuesBillDate, setLastDuesBillDate] = useState<string | null>(null);
+  const [isCheckingDuesStatus, setIsCheckingDuesStatus] = useState(true);
   const [selectedBillToPay, setSelectedBillToPay] = useState<any | null>(null);
   const [paymentChannels, setPaymentChannels] = useState<any[]>([]);
   const [selectedPaymentChannel, setSelectedPaymentChannel] = useState<string | null>(null);
@@ -491,7 +493,7 @@ export default function DashboardPage() {
           if (allPockets && allPockets.length > 0) {
             allPockets.forEach((p: any) => {
               if (!pocketMap[p.community_id]) pocketMap[p.community_id] = [];
-              
+
               // Only push if not already loaded from defaults
               const exists = pocketMap[p.community_id].some(ex => ex.id === p.id);
               if (!exists) {
@@ -504,7 +506,7 @@ export default function DashboardPage() {
               }
             });
           }
-          
+
           // Make sure fallbacks are there
           const commsList = loadedComms;
           commsList.forEach((comm) => {
@@ -534,7 +536,7 @@ export default function DashboardPage() {
             allMembers.forEach((m: any) => {
               if (!m.profile) return;
               if (!memberMap[m.community_id]) memberMap[m.community_id] = [];
-              
+
               const exists = memberMap[m.community_id].some((ex: any) => ex.id === m.profile.id);
               if (!exists) {
                 memberMap[m.community_id].push({
@@ -571,7 +573,7 @@ export default function DashboardPage() {
           if (allTxs && allTxs.length > 0) {
             allTxs.forEach((t: any) => {
               if (!txMap[t.community_id]) txMap[t.community_id] = [];
-              
+
               // Prevent duplicates with default data
               const exists = txMap[t.community_id].some((ex) => ex.id === t.id);
               if (!exists) {
@@ -727,9 +729,9 @@ export default function DashboardPage() {
         // Format date for display
         const whenStr = eventDate
           ? eventDate.toLocaleString("id-ID", {
-              weekday: "short", day: "numeric", month: "short",
-              hour: "2-digit", minute: "2-digit"
-            }) + " WIB"
+            weekday: "short", day: "numeric", month: "short",
+            hour: "2-digit", minute: "2-digit"
+          }) + " WIB"
           : "-";
 
         return {
@@ -816,6 +818,84 @@ export default function DashboardPage() {
     }
   };
 
+  const INDO_MONTHS = [
+    "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+    "Juli", "Agustus", "September", "Oktober", "November", "Desember"
+  ];
+
+  const fetchLastDuesBill = async (communityId: string, userId: string) => {
+    if (!communityId || !userId) return;
+    try {
+      setIsCheckingDuesStatus(true);
+      const { data, error } = await supabase
+        .from("dues_bills")
+        .select("due_date")
+        .eq("community_id", communityId)
+        .eq("profile_id", userId)
+        .order("due_date", { ascending: false })
+        .limit(1);
+
+      if (error) {
+        console.error("Error fetching last dues bill:", error);
+      } else if (data && data.length > 0) {
+        setLastDuesBillDate(data[0].due_date);
+      } else {
+        setLastDuesBillDate(null);
+      }
+    } catch (err) {
+      console.error("Error in fetchLastDuesBill:", err);
+    } finally {
+      setIsCheckingDuesStatus(false);
+    }
+  };
+
+  const shouldShowCreateDuesButton = () => {
+    if (isCheckingDuesStatus) return false;
+    if (!lastDuesBillDate) return true; // Show to create the first monthly dues!
+
+    const parts = lastDuesBillDate.split("-");
+    const lastYear = parseInt(parts[0], 10);
+    const lastMonth = parseInt(parts[1], 10);
+
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth() + 1;
+
+    const lastMonthIndex = lastYear * 12 + lastMonth;
+    const currentMonthIndex = currentYear * 12 + currentMonth;
+
+    return currentMonthIndex > lastMonthIndex;
+  };
+
+  const getNextDuesMonthDetails = () => {
+    if (!lastDuesBillDate) {
+      const now = new Date();
+      return {
+        month: now.getMonth() + 1,
+        year: now.getFullYear(),
+      };
+    }
+    const parts = lastDuesBillDate.split("-");
+    const lastYear = parseInt(parts[0], 10);
+    const lastMonth = parseInt(parts[1], 10);
+
+    let nextMonth = lastMonth + 1;
+    let nextYear = lastYear;
+    if (nextMonth > 12) {
+      nextMonth = 1;
+      nextYear += 1;
+    }
+    return { month: nextMonth, year: nextYear };
+  };
+
+  const getLastDayOfMonth = (year: number, month: number) => {
+    const date = new Date(year, month, 0);
+    const yyyy = date.getFullYear();
+    const mm = String(date.getMonth() + 1).padStart(2, "0");
+    const dd = String(date.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
+  };
+
 
   const handleRedirectToInvoice = async () => {
     if (!selectedCommunityId || !currentUser) return;
@@ -823,7 +903,7 @@ export default function DashboardPage() {
     try {
       const billId = selectedBillToPay?.id || null;
       const amount = selectedBillToPay ? Number(selectedBillToPay.amount) : 50000;
-      const description = selectedBillToPay 
+      const description = selectedBillToPay
         ? `${selectedBillToPay.title} oleh ${profileName}`
         : `Iuran bulanan kas ${activeCommunity?.name} oleh ${profileName}`;
 
@@ -852,7 +932,7 @@ export default function DashboardPage() {
       if (data.invoice_url) {
         setIsPaymentOpen(false);
         window.open(data.invoice_url, "_blank");
-        
+
         Swal.fire({
           title: "Pembayaran Dibuka",
           text: "Halaman pembayaran Xendit telah dibuka di tab baru. Silakan selesaikan pembayaran Anda di sana.",
@@ -882,6 +962,7 @@ export default function DashboardPage() {
       fetchEvents(selectedCommunityId, currentUser?.id);
       if (currentUser?.id) {
         fetchMyUnpaidDues(selectedCommunityId, currentUser.id);
+        fetchLastDuesBill(selectedCommunityId, currentUser.id);
       }
       fetchCommunityDuesBills(selectedCommunityId);
     }
@@ -906,8 +987,8 @@ export default function DashboardPage() {
       }
 
       // 1. Calculate next round number
-      const nextRoundNumber = arisanRounds.length > 0 
-        ? Math.max(...arisanRounds.map(r => r.round_number)) + 1 
+      const nextRoundNumber = arisanRounds.length > 0
+        ? Math.max(...arisanRounds.map(r => r.round_number)) + 1
         : 1;
 
       // 2. Fetch active community members
@@ -1620,14 +1701,14 @@ export default function DashboardPage() {
       // Find the recurring dues pocket or the pocket associated with the specific bill
       const communityPockets = pockets[selectedCommunityId] || [];
       let duesPocket = communityPockets.find(p => p.name.toLowerCase().includes("dues") || p.name.toLowerCase().includes("iuran")) || communityPockets[0];
-      
+
       if (selectedBillToPay && selectedBillToPay.pocket_id) {
         duesPocket = communityPockets.find(p => p.id === selectedBillToPay.pocket_id) || duesPocket;
       }
 
       const amount = selectedBillToPay ? Number(selectedBillToPay.amount) : 50000;
       const methodLabel = selectedPaymentChannel ? ` via ${selectedPaymentChannel}` : "";
-      const description = selectedBillToPay 
+      const description = selectedBillToPay
         ? `${selectedBillToPay.title} oleh ${profileName} (Lunas${methodLabel})`
         : `Iuran bulanan masuk dari ${profileName} (Lunas${methodLabel})`;
 
@@ -1712,7 +1793,7 @@ export default function DashboardPage() {
       }
 
       // Update member payment status (if paying monthly/recurring dues)
-      const isRecurringBill = selectedBillToPay 
+      const isRecurringBill = selectedBillToPay
         ? (selectedBillToPay.title.toLowerCase().includes("perdana") || selectedBillToPay.title.toLowerCase().includes("bulanan") || selectedBillToPay.title.toLowerCase().includes("recurring"))
         : true;
 
@@ -1908,12 +1989,12 @@ export default function DashboardPage() {
   const handleCopyInviteCode = () => {
     if (!activeCommunity) return;
     const realCode = activeCommunity.inviteCode;
-    
+
     if (!realCode) {
       alert("Gagal menyalin kode undangan: kode tidak ditemukan!");
       return;
     }
-    
+
     navigator.clipboard.writeText(realCode);
     alert(`Kode undangan "${realCode}" berhasil disalin! Bagikan ke warga.`);
   };
@@ -1937,11 +2018,11 @@ export default function DashboardPage() {
     const wonProfileIds = arisanRounds
       .filter(r => r.winner_profile_id !== null)
       .map(r => r.winner_profile_id);
-    
+
     // Filter candidates who haven't won yet
     const drawCandidates = activeMembers.filter((m) => !wonProfileIds.includes(m.id));
-    
-    const winner = drawCandidates.length > 0 
+
+    const winner = drawCandidates.length > 0
       ? drawCandidates[Math.floor(Math.random() * drawCandidates.length)]
       : null;
     const winnerName = winner ? winner.name : "Bu Sari";
@@ -1975,7 +2056,7 @@ export default function DashboardPage() {
         // 3. Update pocket balance
         const communityPockets = pockets[selectedCommunityId] || [];
         const arisanPocket = communityPockets.find(p => p.name.toLowerCase().includes("arisan")) || communityPockets[0];
-        
+
         if (arisanPocket) {
           const amount = activeRound.total_prize;
           const newBal = Math.max(0, arisanPocket.balance - amount);
@@ -2037,8 +2118,97 @@ export default function DashboardPage() {
   };
 
 
-  const handleSimulateTagihIuran = () => {
-    alert("Notifikasi WhatsApp penagihan iuran berhasil dikirim otomatis ke seluruh anggota yang menunggak!");
+  const handleCreateMonthlyDues = async () => {
+    if (!selectedCommunityId || !currentUser) return;
+
+    const nextDetails = getNextDuesMonthDetails();
+    const nextMonthName = INDO_MONTHS[nextDetails.month - 1];
+    const nextYear = nextDetails.year;
+
+    const result = await Swal.fire({
+      title: "Buat Iuran Bulanan",
+      text: `Apakah Anda yakin ingin membuat iuran bulanan untuk seluruh warga di bulan ${nextMonthName} ${nextYear}?`,
+      icon: "question",
+      showCancelButton: true,
+      confirmButtonText: "Ya, Buat",
+      cancelButtonText: "Batal",
+      confirmButtonColor: activeCommunity?.primaryColor || "#6366f1",
+    });
+
+    if (!result.isConfirmed) return;
+
+    try {
+      // 1. Fetch all members of the community from Supabase
+      const { data: cms, error: cmsErr } = await supabase
+        .from("community_members")
+        .select("profile_id")
+        .eq("community_id", selectedCommunityId);
+
+      if (cmsErr) {
+        throw new Error(`Gagal mengambil anggota komunitas: ${cmsErr.message}`);
+      }
+
+      if (!cms || cms.length === 0) {
+        throw new Error("Tidak ada anggota di komunitas ini.");
+      }
+
+      // 2. Find the Recurring Dues pocket
+      const { data: pocketsList } = await supabase
+        .from("fund_pockets")
+        .select("*")
+        .eq("community_id", selectedCommunityId);
+
+      const communityPockets = pocketsList || [];
+      const duesPocket = communityPockets.find((p: any) =>
+        p.name.toLowerCase().includes("dues") || p.name.toLowerCase().includes("iuran")
+      ) || communityPockets[0];
+
+      const pocketId = duesPocket?.id || null;
+
+      // 3. Get the last day of the new month
+      const dueDate = getLastDayOfMonth(nextYear, nextDetails.month);
+
+      // 4. Build bills array
+      const billsToInsert = cms.map((cm) => ({
+        community_id: selectedCommunityId,
+        profile_id: cm.profile_id,
+        pocket_id: pocketId,
+        title: `Iuran Bulanan ${nextMonthName} ${nextYear}`,
+        amount: 50000,
+        due_date: dueDate,
+        status: "unpaid"
+      }));
+
+      // 5. Insert bills into Supabase
+      const { error: insertErr } = await supabase
+        .from("dues_bills")
+        .insert(billsToInsert);
+
+      if (insertErr) {
+        throw new Error(`Gagal membuat tagihan: ${insertErr.message}`);
+      }
+
+      Swal.fire({
+        title: "Sukses",
+        text: `Iuran bulanan ${nextMonthName} ${nextYear} berhasil dibuat untuk seluruh warga.`,
+        icon: "success",
+        confirmButtonColor: activeCommunity?.primaryColor || "#6366f1",
+      });
+
+      // 6. Refresh data
+      await fetchLastDuesBill(selectedCommunityId, currentUser.id);
+      await fetchCommunityDuesBills(selectedCommunityId);
+      await fetchMyUnpaidDues(selectedCommunityId, currentUser.id);
+
+    } catch (err: any) {
+      console.error("Gagal membuat iuran bulanan:", err);
+      Swal.fire({
+        title: "Gagal",
+        text: err.message || "Gagal membuat iuran bulanan.",
+        icon: "error",
+        confirmButtonColor: activeCommunity?.primaryColor || "#6366f1",
+      });
+    }
   };
 
   const handleToggleIuranStatus = async (billId: string) => {
@@ -2066,7 +2236,7 @@ export default function DashboardPage() {
 
         if (duesPocket) {
           const newBal = duesPocket.balance + amount;
-          
+
           // Update local pocket state
           const updatedPockets = communityPockets.map((p) => {
             if (p.id === duesPocket.id) {
@@ -2217,8 +2387,8 @@ export default function DashboardPage() {
   const myIuranPaid = myMemberInfo?.iuranStatus === "Lunas";
 
   const totalPaidMembers = activeCommunityMembers.filter((m) => m.iuranStatus === "Lunas").length;
-  const payPercentage = activeCommunityMembers.length > 0 
-    ? Math.round((totalPaidMembers / activeCommunityMembers.length) * 100) 
+  const payPercentage = activeCommunityMembers.length > 0
+    ? Math.round((totalPaidMembers / activeCommunityMembers.length) * 100)
     : 0;
 
   // --- Premium Loading State ---
@@ -2235,7 +2405,7 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-zinc-50 flex flex-col md:flex-row">
-      
+
       {/* --- STATE 1: LANDING DASHBOARD (No community selected yet) --- */}
       {selectedCommunityId === null && (
         <>
@@ -2253,9 +2423,8 @@ export default function DashboardPage() {
           </header>
 
           {/* SIDEBAR FOR LANDING VIEW */}
-          <aside className={`fixed inset-y-0 left-0 z-50 w-64 border-r border-zinc-200/80 bg-white p-5 flex flex-col justify-between transition-transform duration-350 md:sticky md:translate-x-0 md:h-screen ${
-            mobileMenuOpen ? "translate-x-0" : "-translate-x-full"
-          }`}>
+          <aside className={`fixed inset-y-0 left-0 z-50 w-64 border-r border-zinc-200/80 bg-white p-5 flex flex-col justify-between transition-transform duration-350 md:sticky md:translate-x-0 md:h-screen ${mobileMenuOpen ? "translate-x-0" : "-translate-x-full"
+            }`}>
             <div className="space-y-6">
               {/* Close button for Mobile Sidebar */}
               <div className="flex items-center justify-between md:hidden pb-2 border-b border-zinc-100">
@@ -2283,11 +2452,10 @@ export default function DashboardPage() {
               <nav className="space-y-1">
                 <button
                   onClick={() => { setLandingTab("communities"); setMobileMenuOpen(false); }}
-                  className={`flex w-full items-center gap-3 px-3 py-2 text-sm font-semibold rounded-xl transition-all ${
-                    landingTab === "communities"
+                  className={`flex w-full items-center gap-3 px-3 py-2 text-sm font-semibold rounded-xl transition-all ${landingTab === "communities"
                       ? "bg-indigo-50 text-indigo-700 border-l-2 border-indigo-600"
                       : "text-zinc-600 hover:text-indigo-600 hover:bg-zinc-50"
-                  }`}
+                    }`}
                 >
                   <Building className="h-4.5 w-4.5" />
                   Komunitas Saya
@@ -2295,11 +2463,10 @@ export default function DashboardPage() {
 
                 <button
                   onClick={() => { setLandingTab("profile"); setMobileMenuOpen(false); }}
-                  className={`flex w-full items-center gap-3 px-3 py-2 text-sm font-semibold rounded-xl transition-all ${
-                    landingTab === "profile"
+                  className={`flex w-full items-center gap-3 px-3 py-2 text-sm font-semibold rounded-xl transition-all ${landingTab === "profile"
                       ? "bg-indigo-50 text-indigo-700 border-l-2 border-indigo-600"
                       : "text-zinc-600 hover:text-indigo-600 hover:bg-zinc-50"
-                  }`}
+                    }`}
                 >
                   <User className="h-4.5 w-4.5" />
                   Profil Saya
@@ -2331,7 +2498,7 @@ export default function DashboardPage() {
           {/* Right Side Main Content */}
           <div className="flex-1 flex flex-col min-w-0">
             <main className="flex-1 p-6 md:p-10 max-w-5xl mx-auto w-full">
-               {/* SUB-VIEW 1: COMMUNITIES LIST */}
+              {/* SUB-VIEW 1: COMMUNITIES LIST */}
               {landingTab === "communities" && (
                 <div className="space-y-8">
                   <div className="flex flex-col md:flex-row md:items-end justify-between gap-6">
@@ -2420,9 +2587,8 @@ export default function DashboardPage() {
                                     {comm.name.charAt(0)}
                                   </div>
                                 )}
-                                <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
-                                  commRole === "Admin" ? "bg-red-50 text-red-655" : "bg-emerald-50 text-emerald-700"
-                                }`}>
+                                <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${commRole === "Admin" ? "bg-red-50 text-red-655" : "bg-emerald-50 text-emerald-700"
+                                  }`}>
                                   {commRole}
                                 </span>
                               </div>
@@ -2543,9 +2709,8 @@ export default function DashboardPage() {
           </header>
 
           {/* SIDEBAR (Desktop Layout) */}
-          <aside className={`fixed inset-y-0 left-0 z-50 w-64 border-r border-zinc-200/80 bg-white p-5 flex flex-col justify-between transition-transform duration-350 md:sticky md:translate-x-0 md:h-screen ${
-            mobileMenuOpen ? "translate-x-0" : "-translate-x-full"
-          }`}>
+          <aside className={`fixed inset-y-0 left-0 z-50 w-64 border-r border-zinc-200/80 bg-white p-5 flex flex-col justify-between transition-transform duration-350 md:sticky md:translate-x-0 md:h-screen ${mobileMenuOpen ? "translate-x-0" : "-translate-x-full"
+            }`}>
             <div className="space-y-6">
               {/* Close button for Mobile Sidebar */}
               <div className="flex items-center justify-between md:hidden pb-2 border-b border-zinc-100">
@@ -2582,9 +2747,8 @@ export default function DashboardPage() {
                     <div className="font-semibold text-zinc-900 truncate">{profileName}</div>
                     <div className="text-[10px] text-zinc-400 mt-0.5">Anggota Aktif</div>
                   </div>
-                  <span className={`inline-block rounded-full px-2.5 py-0.5 text-[9px] font-bold ${
-                    myRole === "Admin" ? "bg-red-50 text-red-655 border border-red-100" : "bg-emerald-50 text-emerald-600 border border-emerald-100"
-                  }`}>
+                  <span className={`inline-block rounded-full px-2.5 py-0.5 text-[9px] font-bold ${myRole === "Admin" ? "bg-red-50 text-red-655 border border-red-100" : "bg-emerald-50 text-emerald-600 border border-emerald-100"
+                    }`}>
                     {myRole === "Admin" ? "Admin" : "Member"}
                   </span>
                 </div>
@@ -2710,7 +2874,7 @@ export default function DashboardPage() {
           {/* MAIN CONTAINER AREA */}
           <div className="flex-1 flex flex-col min-w-0">
             <main className="flex-1 p-6 md:p-10 max-w-6xl mx-auto w-full space-y-8">
-              
+
               {/* --- VIEW: DASHBOARD SUMMARY --- */}
               {activeTab === "dashboard" && (
                 <div className="space-y-8">
@@ -2821,9 +2985,8 @@ export default function DashboardPage() {
                           (transactions[activeCommunity.id] || []).slice(0, 4).map((t) => (
                             <div key={t.id} className="flex items-center justify-between py-3.5">
                               <div className="flex items-center gap-3">
-                                <div className={`grid h-9 w-9 place-items-center rounded-xl ${
-                                  t.type === "in" ? "bg-emerald-50 text-emerald-650 border border-emerald-100" : "bg-red-50 text-red-655 border border-red-100"
-                                }`}>
+                                <div className={`grid h-9 w-9 place-items-center rounded-xl ${t.type === "in" ? "bg-emerald-50 text-emerald-650 border border-emerald-100" : "bg-red-50 text-red-655 border border-red-100"
+                                  }`}>
                                   {t.type === "in" ? <ArrowDownRight className="h-5 w-5" /> : <ArrowUpRight className="h-5 w-5" />}
                                 </div>
                                 <div>
@@ -3061,9 +3224,8 @@ export default function DashboardPage() {
                             (transactions[activeCommunity.id] || []).map((t) => (
                               <div key={t.id} className="flex items-center justify-between py-3.5">
                                 <div className="flex items-center gap-3">
-                                  <div className={`grid h-9 w-9 place-items-center rounded-xl ${
-                                    t.type === "in" ? "bg-emerald-50 text-emerald-650 border border-emerald-100" : "bg-red-50 text-red-655 border border-red-100"
-                                  }`}>
+                                  <div className={`grid h-9 w-9 place-items-center rounded-xl ${t.type === "in" ? "bg-emerald-50 text-emerald-650 border border-emerald-100" : "bg-red-50 text-red-655 border border-red-100"
+                                    }`}>
                                     {t.type === "in" ? <ArrowDownRight className="h-5 w-5" /> : <ArrowUpRight className="h-5 w-5" />}
                                   </div>
                                   <div>
@@ -3092,35 +3254,6 @@ export default function DashboardPage() {
                   {/* Sub-tab 2: Iuran Tracking */}
                   {walletTab === "iuran" && (
                     <div className="space-y-6">
-                      {/* Tampilan Sisi Anggota (Member) */}
-                      {myRole === "Member" && (
-                        <Card className="rounded-2xl border border-zinc-200 bg-white p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 shadow-sm">
-                          <div className="space-y-1">
-                            <span className="text-xs font-semibold text-zinc-400 uppercase tracking-wider block">Status Iuran Bulanan Saya</span>
-                            <div className="flex items-center gap-2">
-                              {myIuranPaid ? (
-                                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-150">
-                                  <CheckCircle2 className="h-4 w-4" /> Lunas (Bulan Juni)
-                                </span>
-                              ) : (
-                                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-red-50 text-red-750 border border-red-150">
-                                  <Clock className="h-4 w-4" /> Menunggak / Overdue (Rp 50.000)
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                          {!myIuranPaid && (
-                            <Button
-                              onClick={() => setIsPaymentOpen(true)}
-                              className="rounded-xl text-white font-bold text-xs px-5 h-10 hover:opacity-90 shadow-sm"
-                              style={{ backgroundColor: activeCommunity.primaryColor }}
-                            >
-                              Bayar Sekarang (Sandbox Gateway)
-                            </Button>
-                          )}
-                        </Card>
-                      )}
-
                       {/* Tampilan Sisi Pengurus (Admin) / Daftar Semua Warga */}
                       <Card className="rounded-2xl border border-zinc-200/80 p-6 shadow-sm bg-white space-y-6">
                         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -3128,13 +3261,13 @@ export default function DashboardPage() {
                             <h3 className="text-base font-bold text-zinc-900">Daftar Tagihan Iuran Warga</h3>
                             <p className="text-xs text-zinc-400">Kas wajib bulanan sebesar **Rp 50.000 / KK**</p>
                           </div>
-                          {myRole === "Admin" && (
+                          {myRole === "Admin" && shouldShowCreateDuesButton() && (
                             <Button
-                              onClick={handleSimulateTagihIuran}
+                              onClick={handleCreateMonthlyDues}
                               className="rounded-xl text-xs font-bold text-white hover:opacity-90"
                               style={{ backgroundColor: activeCommunity.primaryColor }}
                             >
-                              Tagih Iuran (WhatsApp Broadcast)
+                              Buat Iuran Bulanan
                             </Button>
                           )}
                         </div>
@@ -3171,9 +3304,8 @@ export default function DashboardPage() {
                                       </td>
                                       <td className="py-3 px-2 text-zinc-505">{bill.profiles?.phone || "-"}</td>
                                       <td className="py-3 px-2">
-                                        <span className={`text-[10px] px-2 py-0.5 rounded font-bold uppercase ${
-                                          role === "Admin" ? "bg-red-50 text-red-655" : "bg-zinc-100 text-zinc-650"
-                                        }`}>
+                                        <span className={`text-[10px] px-2 py-0.5 rounded font-bold uppercase ${role === "Admin" ? "bg-red-50 text-red-655" : "bg-zinc-100 text-zinc-650"
+                                          }`}>
                                           {role}
                                         </span>
                                       </td>
@@ -3310,7 +3442,7 @@ export default function DashboardPage() {
                         <span className="text-xs font-bold text-emerald-800 bg-emerald-100/80 px-3 py-1.5 rounded-full border border-emerald-200 font-sans shrink-0">
                           Cair Lunas
                         </span>
-                        <button 
+                        <button
                           onClick={() => setArisanWinner(null)}
                           className="text-emerald-700 hover:text-emerald-950 font-extrabold text-xs ml-2 cursor-pointer"
                         >
@@ -3322,7 +3454,7 @@ export default function DashboardPage() {
 
                   {(() => {
                     const activeRound = arisanRounds.find(r => r.status === 'pending');
-                    
+
                     if (!activeRound) {
                       // CASE 1: Belum Mulai Arisan / Putaran Selesai
                       return (
@@ -3336,7 +3468,7 @@ export default function DashboardPage() {
                               Mulai putaran arisan baru untuk komunitas <span className="font-semibold text-zinc-800">{activeCommunity?.name}</span>. Seluruh anggota akan menerima tagihan iuran arisan.
                             </p>
                           </div>
-                          
+
                           {myRole === "Admin" ? (
                             <Button
                               onClick={() => {
@@ -3416,11 +3548,11 @@ export default function DashboardPage() {
                         <div className="grid gap-6 lg:grid-cols-3">
                           {/* Left & Middle Columns */}
                           <div className="lg:col-span-2 space-y-6">
-                            
+
                             {/* Kocok Arisan Card */}
                             <Card className="rounded-2xl border border-zinc-200/80 p-6 shadow-sm bg-white space-y-6">
                               <h3 className="text-base font-bold text-zinc-900">Tombol "Kocok Arisan"</h3>
-                              
+
                               {myRole === "Admin" ? (
                                 <div className="border border-zinc-250 bg-zinc-50/50 p-8 rounded-2xl text-center space-y-4">
                                   <Trophy className="h-12 w-12 text-amber-500 mx-auto animate-bounce" />
@@ -3543,11 +3675,10 @@ export default function DashboardPage() {
                                         </span>
                                       </div>
                                       <div className="flex items-center gap-2">
-                                        <span className={`text-[9px] font-extrabold uppercase rounded px-1.5 py-0.5 border ${
-                                          bill.status === "paid"
+                                        <span className={`text-[9px] font-extrabold uppercase rounded px-1.5 py-0.5 border ${bill.status === "paid"
                                             ? "bg-emerald-50 text-emerald-700 border-emerald-100"
                                             : "bg-red-50 text-red-700 border-red-105"
-                                        }`}>
+                                          }`}>
                                           {bill.status === "paid" ? "Lunas" : "Belum Bayar"}
                                         </span>
                                         {myRole === "Admin" && (
@@ -3902,9 +4033,8 @@ export default function DashboardPage() {
                               <td className="py-3.5 px-2 font-semibold text-zinc-900">{member.name}</td>
                               <td className="py-3.5 px-2 text-zinc-505">{member.phone}</td>
                               <td className="py-3.5 px-2">
-                                <span className={`text-[10px] px-2.5 py-0.5 rounded font-bold uppercase ${
-                                  member.role === "Admin" ? "bg-red-50 text-red-655" : "bg-emerald-50 text-emerald-700"
-                                }`}>
+                                <span className={`text-[10px] px-2.5 py-0.5 rounded font-bold uppercase ${member.role === "Admin" ? "bg-red-50 text-red-655" : "bg-emerald-50 text-emerald-700"
+                                  }`}>
                                   {member.role}
                                 </span>
                               </td>
@@ -3950,7 +4080,7 @@ export default function DashboardPage() {
             </button>
             <h2 className="text-xl font-bold text-zinc-955 mb-1">Mulai Arisan Baru</h2>
             <p className="text-xs text-zinc-500 mb-6">Tentukan nominal iuran arisan per anggota untuk putaran aktif ini.</p>
-            
+
             <form onSubmit={handleConfirmMulaiArisan} className="space-y-4">
               <div className="space-y-1.5">
                 <Label htmlFor="arisan-amount">Nominal Arisan per Anggota (Rp)</Label>
@@ -4012,7 +4142,7 @@ export default function DashboardPage() {
             </button>
             <h2 className="text-xl font-bold text-zinc-955 mb-1">Buat Komunitas Baru</h2>
             <p className="text-xs text-zinc-555 mb-6">Lengkapi identitas dasar, branding warna, dan kantong dana untuk memulai.</p>
-            
+
             <form onSubmit={handleCreateCommunity} className="space-y-6">
               {/* Bagian 1: Identitas Dasar */}
               <div className="space-y-4">
@@ -4116,7 +4246,7 @@ export default function DashboardPage() {
                 <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider pb-1 border-b border-zinc-100">
                   3. Inisialisasi Kantong Dana Keuangan
                 </h3>
-                
+
                 <div className="space-y-2">
                   <Label>Kantong Dana Awal (Pockets)</Label>
                   <div className="grid grid-cols-2 gap-3 text-xs">
@@ -4208,7 +4338,7 @@ export default function DashboardPage() {
             </button>
             <h2 className="text-xl font-bold text-zinc-955 mb-1">Gabung Komunitas</h2>
             <p className="text-xs text-zinc-500 mb-6">Masukkan kode undangan komunitas untuk ikut memantau kas.</p>
-            
+
             <form onSubmit={handleJoinCommunity} className="space-y-4">
               <div className="space-y-1.5">
                 <Label htmlFor="join-code">Kode Undangan (Invite Code)</Label>
@@ -4240,7 +4370,7 @@ export default function DashboardPage() {
             </button>
             <h2 className="text-xl font-bold text-zinc-950 mb-1">Tambah Kantong Dana</h2>
             <p className="text-xs text-zinc-500 mb-6">Pisahkan pos dana komunitas agar pencatatan tidak campur aduk.</p>
-            
+
             <form onSubmit={handleAddPocket} className="space-y-4">
               <div className="space-y-1.5">
                 <Label htmlFor="pocket-name">Nama Kantong Dana</Label>
@@ -4297,7 +4427,7 @@ export default function DashboardPage() {
             </button>
             <h2 className="text-xl font-bold text-zinc-955 mb-1">Catat Transaksi Komunitas</h2>
             <p className="text-xs text-zinc-550 mb-6">Pencatatan langsung terlihat oleh seluruh warga.</p>
-            
+
             <form onSubmit={handleAddTransaction} className="space-y-4">
               <div className="space-y-1.5">
                 <Label htmlFor="tx-desc">Deskripsi Transaksi</Label>
@@ -4316,22 +4446,20 @@ export default function DashboardPage() {
                   <button
                     type="button"
                     onClick={() => setTxType("in")}
-                    className={`h-10 text-xs font-bold rounded-xl border ${
-                      txType === "in"
+                    className={`h-10 text-xs font-bold rounded-xl border ${txType === "in"
                         ? "bg-emerald-50 border-emerald-500 text-emerald-700"
                         : "bg-white border-zinc-200 text-zinc-600"
-                    }`}
+                      }`}
                   >
                     Uang Masuk (+)
                   </button>
                   <button
                     type="button"
                     onClick={() => setTxType("out")}
-                    className={`h-10 text-xs font-bold rounded-xl border ${
-                      txType === "out"
+                    className={`h-10 text-xs font-bold rounded-xl border ${txType === "out"
                         ? "bg-red-50 border-red-500 text-red-750"
                         : "bg-white border-zinc-200 text-zinc-600"
-                    }`}
+                      }`}
                   >
                     Uang Keluar (-)
                   </button>

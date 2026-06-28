@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { createAdminServerClient } from "@/lib/supabase/server";
 
 export async function POST(req: Request) {
   try {
@@ -48,6 +49,18 @@ export async function POST(req: Request) {
     }
 
     const data = await res.json();
+
+    if (bill_id) {
+      const supabase = createAdminServerClient();
+      await supabase
+        .from("dues_bills")
+        .update({
+          xendit_invoice_id: data.id,
+          xendit_invoice_url: data.invoice_url
+        })
+        .eq("id", bill_id);
+    }
+
     return NextResponse.json({ invoice_url: data.invoice_url });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
