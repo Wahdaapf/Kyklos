@@ -411,7 +411,10 @@ export default function DashboardPage() {
   // Wallet Sub-menus
   const [walletTab, setWalletTab] = useState<"pockets" | "iuran" | "my_iuran">("pockets");
   const [myUnpaidDues, setMyUnpaidDues] = useState<any[]>([]);
+  const [communityDuesBills, setCommunityDuesBills] = useState<any[]>([]);
   const [selectedBillToPay, setSelectedBillToPay] = useState<any | null>(null);
+  const [paymentChannels, setPaymentChannels] = useState<any[]>([]);
+  const [selectedPaymentChannel, setSelectedPaymentChannel] = useState<string | null>(null);
 
   const activeCommunity = communities.find((c) => c.id === selectedCommunityId);
 
@@ -780,6 +783,95 @@ export default function DashboardPage() {
     }
   };
 
+  const fetchCommunityDuesBills = async (communityId: string) => {
+    if (!communityId) return;
+    try {
+      const { data, error } = await supabase
+        .from("dues_bills")
+        .select(`
+          id,
+          title,
+          amount,
+          due_date,
+          status,
+          community_id,
+          profile_id,
+          profiles:profiles (
+            id,
+            full_name,
+            phone
+          )
+        `)
+        .eq("community_id", communityId)
+        .eq("status", "unpaid")
+        .order("due_date", { ascending: true });
+
+      if (error) {
+        console.error("Error fetching community dues bills:", error);
+      } else {
+        setCommunityDuesBills(data || []);
+      }
+    } catch (err) {
+      console.error("Error in fetchCommunityDuesBills:", err);
+    }
+  };
+
+
+  const handleRedirectToInvoice = async () => {
+    if (!selectedCommunityId || !currentUser) return;
+
+    try {
+      const billId = selectedBillToPay?.id || null;
+      const amount = selectedBillToPay ? Number(selectedBillToPay.amount) : 50000;
+      const description = selectedBillToPay 
+        ? `${selectedBillToPay.title} oleh ${profileName}`
+        : `Iuran bulanan kas ${activeCommunity?.name} oleh ${profileName}`;
+
+      const res = await fetch("/api/payment/create-invoice", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          amount,
+          description,
+          bill_id: billId,
+          community_id: selectedCommunityId,
+          profile_id: currentUser.id,
+          email: profileEmail || undefined,
+          name: profileName,
+          phone: profilePhone || undefined,
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error("Gagal membuat link pembayaran Xendit.");
+      }
+
+      const data = await res.json();
+      if (data.invoice_url) {
+        setIsPaymentOpen(false);
+        window.open(data.invoice_url, "_blank");
+        
+        Swal.fire({
+          title: "Pembayaran Dibuka",
+          text: "Halaman pembayaran Xendit telah dibuka di tab baru. Silakan selesaikan pembayaran Anda di sana.",
+          icon: "info",
+          confirmButtonColor: activeCommunity?.primaryColor || "#6366f1",
+        });
+      }
+    } catch (err: any) {
+      console.error(err);
+      Swal.fire({
+        title: "Gagal",
+        text: err.message || "Gagal membuat tagihan iuran.",
+        icon: "error",
+        confirmButtonColor: activeCommunity?.primaryColor || "#6366f1",
+      });
+    }
+  };
+
+
   // Update active community details when user switches
   useEffect(() => {
     if (selectedCommunityId) {
@@ -791,6 +883,7 @@ export default function DashboardPage() {
       if (currentUser?.id) {
         fetchMyUnpaidDues(selectedCommunityId, currentUser.id);
       }
+      fetchCommunityDuesBills(selectedCommunityId);
     }
   }, [selectedCommunityId, currentUser]);
 
@@ -1533,9 +1626,10 @@ export default function DashboardPage() {
       }
 
       const amount = selectedBillToPay ? Number(selectedBillToPay.amount) : 50000;
+      const methodLabel = selectedPaymentChannel ? ` via ${selectedPaymentChannel}` : "";
       const description = selectedBillToPay 
-        ? `${selectedBillToPay.title} oleh ${profileName} (Lunas)`
-        : `Iuran bulanan masuk dari ${profileName} (Lunas)`;
+        ? `${selectedBillToPay.title} oleh ${profileName} (Lunas${methodLabel})`
+        : `Iuran bulanan masuk dari ${profileName} (Lunas${methodLabel})`;
 
       if (duesPocket) {
         const newBal = duesPocket.balance + amount;
@@ -1634,6 +1728,13 @@ export default function DashboardPage() {
           [selectedCommunityId]: updatedMembers,
         });
       }
+
+      Swal.fire({
+        title: "Pembayaran Berhasil",
+        text: `Pembayaran sebesar Rp ${amount.toLocaleString("id-ID")} via ${selectedPaymentChannel || "QRIS"} berhasil diproses!`,
+        icon: "success",
+        confirmButtonColor: activeCommunity?.primaryColor || "#6366f1",
+      });
 
       setIsPaymentOpen(false);
       setSelectedBillToPay(null);
@@ -1940,21 +2041,86 @@ export default function DashboardPage() {
     alert("Notifikasi WhatsApp penagihan iuran berhasil dikirim otomatis ke seluruh anggota yang menunggak!");
   };
 
-  const handleToggleIuranStatus = (memberId: string) => {
-    if (!selectedCommunityId) return;
+  const handleToggleIuranStatus = async (billId: string) => {
+    try {
+      const targetBill = communityDuesBills.find((b) => b.id === billId);
+      if (!targetBill) return;
 
-    const updated = (members[selectedCommunityId] || []).map((m) => {
-      if (m.id === memberId) {
-        const newStatus = m.iuranStatus === "Lunas" ? ("Menunggak" as const) : ("Lunas" as const);
-        return { ...m, iuranStatus: newStatus };
+      const newStatus = targetBill.status === "unpaid" ? "paid" : "unpaid";
+
+      // 1. Update in Supabase
+      const { error } = await supabase
+        .from("dues_bills")
+        .update({ status: newStatus })
+        .eq("id", billId);
+
+      if (error) {
+        throw error;
       }
-      return m;
-    });
 
-    setMembers({
-      ...members,
-      [selectedCommunityId]: updated,
-    });
+      // 2. Perform treasury pocket updates & transaction record log if it is marked as paid
+      if (newStatus === "paid" && selectedCommunityId) {
+        const communityPockets = pockets[selectedCommunityId] || [];
+        const duesPocket = communityPockets.find(p => p.name.toLowerCase().includes("dues") || p.name.toLowerCase().includes("iuran")) || communityPockets[0];
+        const amount = Number(targetBill.amount);
+
+        if (duesPocket) {
+          const newBal = duesPocket.balance + amount;
+          
+          // Update local pocket state
+          const updatedPockets = communityPockets.map((p) => {
+            if (p.id === duesPocket.id) {
+              return { ...p, balance: newBal };
+            }
+            return p;
+          });
+          setPockets(prev => ({
+            ...prev,
+            [selectedCommunityId]: updatedPockets,
+          }));
+
+          // Insert transaction in Supabase
+          await supabase.from("transactions").insert({
+            community_id: selectedCommunityId,
+            pocket_id: duesPocket.id,
+            profile_id: targetBill.profile_id,
+            type: "income",
+            amount: amount,
+            description: `${targetBill.title} (Lunas)`,
+            status: "success",
+          });
+
+          // Update pocket balance in Supabase
+          await supabase
+            .from("fund_pockets")
+            .update({ balance: newBal })
+            .eq("id", duesPocket.id);
+        }
+      }
+
+      // 3. Refresh list from Supabase
+      if (selectedCommunityId) {
+        await fetchCommunityDuesBills(selectedCommunityId);
+        if (currentUser?.id) {
+          await fetchMyUnpaidDues(selectedCommunityId, currentUser.id);
+        }
+      }
+
+      Swal.fire({
+        title: "Sukses",
+        text: `Status tagihan berhasil diubah menjadi ${newStatus === "paid" ? "Lunas" : "Menunggak"}.`,
+        icon: "success",
+        confirmButtonColor: activeCommunity?.primaryColor || "#6366f1",
+      });
+    } catch (err: any) {
+      console.error("Gagal mengubah status tagihan:", err);
+      Swal.fire({
+        title: "Gagal",
+        text: err.message || "Gagal mengubah status tagihan.",
+        icon: "error",
+        confirmButtonColor: activeCommunity?.primaryColor || "#6366f1",
+      });
+    }
   };
 
   const handleSendBillReminder = (name: string, phone: string) => {
@@ -2985,45 +3151,58 @@ export default function DashboardPage() {
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-zinc-150">
-                              {activeCommunityMembers.map((member) => (
-                                <tr key={member.id} className="hover:bg-zinc-50/50">
-                                  <td className="py-3 px-2 font-semibold text-zinc-900">{member.name}</td>
-                                  <td className="py-3 px-2 text-zinc-505">{member.phone}</td>
-                                  <td className="py-3 px-2">
-                                    <span className={`text-[10px] px-2 py-0.5 rounded font-bold uppercase ${
-                                      member.role === "Admin" ? "bg-red-50 text-red-655" : "bg-zinc-100 text-zinc-650"
-                                    }`}>
-                                      {member.role}
-                                    </span>
+                              {communityDuesBills.length === 0 ? (
+                                <tr>
+                                  <td colSpan={myRole === "Admin" ? 5 : 4} className="py-8 text-center text-zinc-400 text-xs">
+                                    Tidak ada tagihan iuran aktif (semua warga lunas).
                                   </td>
-                                  <td className="py-3 px-2">
-                                    <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-bold ${
-                                      member.iuranStatus === "Lunas"
-                                        ? "bg-emerald-50 text-emerald-700 border border-emerald-100"
-                                        : "bg-red-50 text-red-700 border border-red-100"
-                                    }`}>
-                                      {member.iuranStatus}
-                                    </span>
-                                  </td>
-                                  {myRole === "Admin" && (
-                                    <td className="py-3 px-2 text-right space-x-3">
-                                      <button
-                                        onClick={() => handleToggleIuranStatus(member.id)}
-                                        className="text-xs font-semibold hover:underline"
-                                        style={{ color: activeCommunity.primaryColor }}
-                                      >
-                                        Ubah Status
-                                      </button>
-                                      <button
-                                        onClick={() => handleSendBillReminder(member.name, member.phone)}
-                                        className="text-xs font-semibold text-zinc-500 hover:text-zinc-800 hover:underline"
-                                      >
-                                        Kirim Pengingat
-                                      </button>
-                                    </td>
-                                  )}
                                 </tr>
-                              ))}
+                              ) : (
+                                communityDuesBills.map((bill) => {
+                                  const memberInfo = (members[activeCommunity.id] || []).find(m => m.id === bill.profile_id);
+                                  const role = memberInfo?.role || "Member";
+                                  return (
+                                    <tr key={bill.id} className="hover:bg-zinc-50/50">
+                                      <td className="py-3 px-2 font-semibold text-zinc-900">
+                                        <div>
+                                          <p>{bill.profiles?.full_name || "Warga Kyklos"}</p>
+                                          <p className="text-[10px] text-zinc-400 font-normal">{bill.title}</p>
+                                        </div>
+                                      </td>
+                                      <td className="py-3 px-2 text-zinc-505">{bill.profiles?.phone || "-"}</td>
+                                      <td className="py-3 px-2">
+                                        <span className={`text-[10px] px-2 py-0.5 rounded font-bold uppercase ${
+                                          role === "Admin" ? "bg-red-50 text-red-655" : "bg-zinc-100 text-zinc-650"
+                                        }`}>
+                                          {role}
+                                        </span>
+                                      </td>
+                                      <td className="py-3 px-2">
+                                        <span className="inline-block px-2.5 py-0.5 rounded-full text-xs font-bold bg-red-50 text-red-700 border border-red-100">
+                                          Menunggak (Rp {Number(bill.amount).toLocaleString("id-ID")})
+                                        </span>
+                                      </td>
+                                      {myRole === "Admin" && (
+                                        <td className="py-3 px-2 text-right space-x-3">
+                                          <button
+                                            onClick={() => handleToggleIuranStatus(bill.id)}
+                                            className="text-xs font-semibold hover:underline"
+                                            style={{ color: activeCommunity.primaryColor }}
+                                          >
+                                            Ubah Status
+                                          </button>
+                                          <button
+                                            onClick={() => handleSendBillReminder(bill.profiles?.full_name || "Warga", bill.profiles?.phone || "")}
+                                            className="text-xs font-semibold text-zinc-500 hover:text-zinc-800 hover:underline"
+                                          >
+                                            Kirim Pengingat
+                                          </button>
+                                        </td>
+                                      )}
+                                    </tr>
+                                  );
+                                })
+                              )}
                             </tbody>
                           </table>
                         </div>
@@ -4216,51 +4395,50 @@ export default function DashboardPage() {
             </div>
 
             <div className="p-6 space-y-6">
+              {/* Amount & Description */}
               <div className="text-center space-y-1">
-                <span className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">Metode Pembayaran Instan</span>
-                <h3 className="text-xl font-bold text-zinc-900">
-                  Rp {selectedBillToPay ? selectedBillToPay.amount.toLocaleString("id-ID") : "50.000"}
+                <span className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">Total Tagihan</span>
+                <h3 className="text-2xl font-black text-zinc-900">
+                  Rp {selectedBillToPay ? Number(selectedBillToPay.amount).toLocaleString("id-ID") : "50.000"}
                 </h3>
-                <p className="text-xs text-zinc-555">
+                <p className="text-xs text-zinc-500 font-sans">
                   {selectedBillToPay ? selectedBillToPay.title : `Iuran Kas Wajib ${activeCommunity.name}`}
                 </p>
               </div>
 
-              <div className="space-y-4">
-                <div className="p-3 border border-zinc-105 rounded-xl bg-zinc-50 flex items-center justify-between text-xs">
-                  <div className="flex items-center gap-2">
-                    <QrCode className="h-4 w-4 text-zinc-655" />
-                    <span className="font-semibold">QRIS (Gopay / ShopeePay)</span>
-                  </div>
-                  <span className="text-[10px] font-bold text-emerald-600 bg-emerald-100 rounded px-1.5 py-0.5">Disukai</span>
+              {/* Xendit supported methods info */}
+              <div className="rounded-xl border border-zinc-100 bg-zinc-50 p-4 space-y-2.5">
+                <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">Metode pembayaran yang tersedia</p>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { label: "QRIS", color: "bg-rose-50 text-rose-700 border-rose-100" },
+                    { label: "VA Bank", color: "bg-blue-50 text-blue-700 border-blue-100" },
+                    { label: "E-Wallet", color: "bg-purple-50 text-purple-700 border-purple-100" },
+                    { label: "Retail", color: "bg-orange-50 text-orange-700 border-orange-100" },
+                  ].map((m) => (
+                    <span key={m.label} className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${m.color}`}>
+                      {m.label}
+                    </span>
+                  ))}
                 </div>
-
-                <div className="p-3 border border-zinc-100 rounded-xl bg-zinc-50 flex items-center justify-between text-xs">
-                  <div className="flex items-center gap-2">
-                    <div className="h-3 w-6 bg-blue-600 text-[8px] font-bold text-white grid place-items-center rounded-sm">BCA</div>
-                    <span className="font-semibold">Virtual Account BCA</span>
-                  </div>
-                </div>
-
-                <div className="p-3 border border-zinc-100 rounded-xl bg-zinc-50 flex items-center justify-between text-xs">
-                  <div className="flex items-center gap-2">
-                    <div className="h-3 w-6 bg-orange-600 text-[8px] font-bold text-white grid place-items-center rounded-sm">BNI</div>
-                    <span className="font-semibold">Virtual Account BNI</span>
-                  </div>
-                </div>
+                <p className="text-[10px] text-zinc-400 font-sans leading-relaxed">
+                  Anda akan diarahkan ke halaman Xendit untuk memilih metode pembayaran yang Anda inginkan.
+                </p>
               </div>
 
-              <div className="pt-2">
+              {/* CTA Button */}
+              <div className="pt-1">
                 <Button
-                  onClick={handlePaymentSuccess}
-                  className="w-full h-11 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm shadow-sm"
+                  onClick={handleRedirectToInvoice}
+                  className="w-full h-12 rounded-xl text-white font-bold text-sm shadow-sm transition-all hover:opacity-90 active:scale-[0.98]"
+                  style={{ backgroundColor: activeCommunity.primaryColor }}
                 >
-                  Bayar Sekarang
+                  Bayar Sekarang →
                 </Button>
               </div>
 
-              <p className="text-[10px] text-center text-zinc-400">
-                Didukung oleh simulasi Midtrans Gateway. Pembayaran aman dan terenkripsi.
+              <p className="text-[10px] text-center text-zinc-400 font-sans">
+                Didukung oleh <span className="font-bold">Xendit</span> Payment Gateway. Pembayaran aman &amp; terenkripsi.
               </p>
             </div>
           </Card>

@@ -58,7 +58,7 @@ export default function LoginPage() {
         </>
       }
     >
-      <form className="space-y-5" onSubmit={handleLogin}>
+      <form className="space-y-5" onSubmit={handleLogin} method="POST">
         {errorMsg && (
           <div className="rounded-xl bg-red-50 border border-red-200 p-3.5 text-xs font-medium text-red-700">
             {errorMsg}

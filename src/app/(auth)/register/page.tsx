@@ -115,7 +115,7 @@ export default function RegisterPage() {
           </div>
         </div>
       ) : (
-        <form className="space-y-5" onSubmit={handleRegister}>
+        <form className="space-y-5" onSubmit={handleRegister} method="POST">
           {errorMsg && (
             <div className="rounded-xl bg-red-50 border border-red-200 p-3.5 text-xs font-medium text-red-700">
               {errorMsg}
