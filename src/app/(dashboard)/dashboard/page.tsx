@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import Swal from "sweetalert2";
+
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -49,7 +51,24 @@ interface Community {
   description: string;
   logoName?: string;
   inviteCode?: string;
+  arisan_nominal?: number | null;
+  arisan_period?: string | null;
 }
+
+interface ArisanRound {
+  id: string;
+  community_id: string;
+  round_number: number;
+  winner_profile_id: string | null;
+  total_prize: number;
+  drawn_at: string;
+  status: string;
+  winner_profile?: {
+    id: string;
+    full_name: string;
+  } | null;
+}
+
 
 interface Pocket {
   id: string;
@@ -74,6 +93,9 @@ interface Event {
   description?: string;
   location?: string;
   when: string;
+  event_date?: string; // ISO string from DB
+  price?: number;
+  pocket_id?: string | null;
   status: "upcoming" | "done";
   userRSVP: "none" | "yes" | "no" | "maybe";
   rsvpYesCount: number;
@@ -328,6 +350,12 @@ export default function DashboardPage() {
     "arisan-melati": ["Bu Sari (Putaran 5)", "Adit (Putaran 4)"],
     "alumni-sma1": ["Tina (Putaran 1)"],
   });
+  const [arisanRounds, setArisanRounds] = useState<ArisanRound[]>([]);
+  const [arisanBills, setArisanBills] = useState<Record<string, any[]>>({});
+  const [isMulaiArisanOpen, setIsMulaiArisanOpen] = useState(false);
+  const [arisanInputAmount, setArisanInputAmount] = useState("50000");
+  const [isLoadingArisan, setIsLoadingArisan] = useState(false);
+
 
   // Mobile sidebar visibility
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -371,6 +399,10 @@ export default function DashboardPage() {
   const [newEventDesc, setNewEventDesc] = useState("");
   const [newEventLocation, setNewEventLocation] = useState("");
   const [newEventWhen, setNewEventWhen] = useState("");
+  const [newEventDate, setNewEventDate] = useState(""); // datetime-local
+  const [newEventPrice, setNewEventPrice] = useState("0");
+  const [newEventPocketId, setNewEventPocketId] = useState("");
+  const [isCreatingEvent, setIsCreatingEvent] = useState(false);
 
   const [newThreadTitle, setNewThreadTitle] = useState("");
   const [activeDiscussionId, setActiveDiscussionId] = useState<string | null>(null);
@@ -566,14 +598,292 @@ export default function DashboardPage() {
     loadData();
   }, [router]);
 
+  const fetchArisanRounds = async (communityId: string) => {
+    if (!communityId) return;
+    setIsLoadingArisan(true);
+    try {
+      const { data, error } = await supabase
+        .from("arisan_rounds")
+        .select(`
+          *,
+          winner_profile:profiles(id, full_name)
+        `)
+        .eq("community_id", communityId)
+        .order("round_number", { ascending: true });
+
+      if (error) {
+        console.error("Error fetching arisan rounds:", error);
+      } else {
+        setArisanRounds(data || []);
+
+        const activeRound = data?.find((r: any) => r.status === 'pending');
+        if (activeRound) {
+          const { data: bills, error: billsErr } = await supabase
+            .from("dues_bills")
+            .select(`
+              id,
+              title,
+              amount,
+              status,
+              due_date,
+              profile:profiles (
+                id,
+                full_name,
+                phone
+              )
+            `)
+            .eq("community_id", communityId)
+            .eq("title", `Arisan Putaran ${activeRound.round_number}`);
+
+          if (billsErr) {
+            console.error("Error fetching arisan bills:", billsErr);
+          } else {
+            setArisanBills(prev => ({ ...prev, [communityId]: bills || [] }));
+          }
+        } else {
+          setArisanBills(prev => ({ ...prev, [communityId]: [] }));
+        }
+      }
+    } catch (err) {
+      console.error("Error in fetchArisanRounds:", err);
+    } finally {
+      setIsLoadingArisan(false);
+    }
+  };
+
+  const handleToggleArisanBillStatus = async (billId: string, currentStatus: string) => {
+    if (!selectedCommunityId) return;
+    const newStatus = currentStatus === "paid" ? "unpaid" : "paid";
+
+    try {
+      const { error } = await supabase
+        .from("dues_bills")
+        .update({ status: newStatus })
+        .eq("id", billId);
+
+      if (error) {
+        console.error("Gagal mengubah status tagihan:", error);
+        Swal.fire({
+          title: "Gagal",
+          text: `Gagal memperbarui status pembayaran: ${error.message}`,
+          icon: "error",
+          confirmButtonColor: activeCommunity?.primaryColor || "#6366f1"
+        });
+      } else {
+        // Update local state
+        const updated = (arisanBills[selectedCommunityId] || []).map((b: any) => {
+          if (b.id === billId) {
+            return { ...b, status: newStatus };
+          }
+          return b;
+        });
+        setArisanBills({
+          ...arisanBills,
+          [selectedCommunityId]: updated
+        });
+
+        Swal.fire({
+          title: "Sukses",
+          text: `Status tagihan berhasil diubah menjadi ${newStatus === "paid" ? "Lunas" : "Belum Bayar"}.`,
+          icon: "success",
+          timer: 1500,
+          showConfirmButton: false
+        });
+      }
+    } catch (err: any) {
+      console.error(err);
+    }
+  };
+
+  const fetchEvents = async (communityId: string, userId?: string) => {
+    if (!communityId) return;
+    try {
+      // Fetch events with RSVP counts
+      const { data: eventsData, error: eventsErr } = await supabase
+        .from("events")
+        .select(`
+          id, title, description, location, event_date, price, pocket_id, created_by,
+          event_rsvps (id, profile_id, status)
+        `)
+        .eq("community_id", communityId)
+        .order("event_date", { ascending: true });
+
+      if (eventsErr) {
+        console.error("Error fetching events:", eventsErr);
+        return;
+      }
+
+      const mapped: Event[] = (eventsData || []).map((e: any) => {
+        const rsvps: any[] = e.event_rsvps || [];
+        const myRsvp = rsvps.find((r: any) => r.profile_id === userId);
+        const now = new Date();
+        const eventDate = e.event_date ? new Date(e.event_date) : null;
+
+        // Format date for display
+        const whenStr = eventDate
+          ? eventDate.toLocaleString("id-ID", {
+              weekday: "short", day: "numeric", month: "short",
+              hour: "2-digit", minute: "2-digit"
+            }) + " WIB"
+          : "-";
+
+        return {
+          id: e.id,
+          title: e.title,
+          description: e.description || "",
+          location: e.location || "",
+          when: whenStr,
+          event_date: e.event_date,
+          price: Number(e.price) || 0,
+          pocket_id: e.pocket_id,
+          status: (eventDate && eventDate < now) ? "done" : "upcoming",
+          userRSVP: myRsvp ? (myRsvp.status === "attending" ? "yes" : myRsvp.status === "absent" ? "no" : "maybe") : "none",
+          rsvpYesCount: rsvps.filter((r: any) => r.status === "attending").length,
+          rsvpNoCount: rsvps.filter((r: any) => r.status === "absent").length,
+          rsvpMaybeCount: rsvps.filter((r: any) => r.status === "maybe").length,
+        };
+      });
+
+      setEvents(prev => ({ ...prev, [communityId]: mapped }));
+    } catch (err) {
+      console.error("Error in fetchEvents:", err);
+    }
+  };
+
   // Update active community details when user switches
   useEffect(() => {
     if (selectedCommunityId) {
       setActiveTab("dashboard");
       setWalletTab("pockets");
       setActiveDiscussionId(null);
+      fetchArisanRounds(selectedCommunityId);
+      fetchEvents(selectedCommunityId, currentUser?.id);
     }
   }, [selectedCommunityId]);
+
+  const handleConfirmMulaiArisan = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedCommunityId || !currentUser) return;
+
+    try {
+      setIsLoadingArisan(true);
+      const amount = parseFloat(arisanInputAmount) || 0;
+      if (amount <= 0) {
+        Swal.fire({
+          title: "Peringatan",
+          text: "Nominal arisan harus lebih besar dari 0!",
+          icon: "warning",
+          confirmButtonColor: activeCommunity?.primaryColor || "#6366f1",
+        });
+        setIsLoadingArisan(false);
+        return;
+      }
+
+      // 1. Calculate next round number
+      const nextRoundNumber = arisanRounds.length > 0 
+        ? Math.max(...arisanRounds.map(r => r.round_number)) + 1 
+        : 1;
+
+      // 2. Fetch active community members
+      const activeMembers = members[selectedCommunityId] || [];
+      if (activeMembers.length === 0) {
+        Swal.fire({
+          title: "Peringatan",
+          text: "Komunitas ini belum memiliki anggota!",
+          icon: "warning",
+          confirmButtonColor: activeCommunity?.primaryColor || "#6366f1",
+        });
+        setIsLoadingArisan(false);
+        return;
+      }
+
+      // Calculate total prize
+      const totalPrize = amount * activeMembers.length;
+
+      // 3. Create new record in arisan_rounds
+      const { data: newRound, error: roundErr } = await supabase
+        .from("arisan_rounds")
+        .insert({
+          community_id: selectedCommunityId,
+          round_number: nextRoundNumber,
+          total_prize: totalPrize,
+          status: "pending"
+        })
+        .select()
+        .single();
+
+      if (roundErr) {
+        console.error("Error creating arisan round:", roundErr);
+        Swal.fire({
+          title: "Gagal",
+          text: `Gagal memulai putaran arisan: ${roundErr.message}`,
+          icon: "error",
+          confirmButtonColor: activeCommunity?.primaryColor || "#6366f1",
+        });
+        setIsLoadingArisan(false);
+        return;
+      }
+
+      // 4. Create dues bills for all members
+      // Find the pocket ID for Arisan (Dana Putaran)
+      const communityPockets = pockets[selectedCommunityId] || [];
+      const arisanPocket = communityPockets.find(p => p.name.toLowerCase().includes("arisan")) || communityPockets[0];
+      const pocketId = arisanPocket?.id || null;
+
+      // Format today's date YYYY-MM-DD
+      const now = new Date();
+      const year = now.getFullYear();
+      const month = String(now.getMonth() + 1).padStart(2, "0");
+      const date = String(now.getDate()).padStart(2, "0");
+      const dueDateString = `${year}-${month}-${date}`;
+
+      const billsToInsert = activeMembers.map((member) => ({
+        community_id: selectedCommunityId,
+        profile_id: member.id, // profile id of member
+        title: `Arisan Putaran ${nextRoundNumber}`,
+        amount: amount,
+        due_date: dueDateString,
+        status: "unpaid",
+        pocket_id: pocketId,
+      }));
+
+      const { error: insertErr } = await supabase
+        .from("dues_bills")
+        .insert(billsToInsert);
+
+      if (insertErr) {
+        console.error("Error creating dues bills:", insertErr);
+        Swal.fire({
+          title: "Gagal",
+          text: `Gagal membuat tagihan iuran arisan: ${insertErr.message}`,
+          icon: "error",
+          confirmButtonColor: activeCommunity?.primaryColor || "#6366f1",
+        });
+      } else {
+        Swal.fire({
+          title: "Arisan Dimulai!",
+          text: `Arisan Putaran ${nextRoundNumber} berhasil dimulai dengan iuran sebesar Rp ${amount.toLocaleString("id-ID")} per anggota!`,
+          icon: "success",
+          confirmButtonColor: activeCommunity?.primaryColor || "#6366f1",
+        });
+      }
+
+      // 5. Reload rounds and close modal
+      await fetchArisanRounds(selectedCommunityId);
+      setIsMulaiArisanOpen(false);
+
+    } catch (err: any) {
+      console.error("Error in handleConfirmMulaiArisan:", err);
+      Swal.fire({
+        title: "Terjadi Kesalahan",
+        text: err.message || String(err),
+        icon: "error",
+        confirmButtonColor: activeCommunity?.primaryColor || "#6366f1",
+      });
+    } finally {
+      setIsLoadingArisan(false);
+    }
+  };
 
   // Handle Logout
   const handleLogout = async () => {
@@ -1084,24 +1394,23 @@ export default function DashboardPage() {
     }
   };
 
-  const handleRSVP = (eventId: string, rsvp: "yes" | "no" | "maybe") => {
-    if (!selectedCommunityId) return;
+  const handleRSVP = async (eventId: string, rsvp: "yes" | "no" | "maybe") => {
+    if (!selectedCommunityId || !currentUser) return;
 
+    // Map UI values to DB status
+    const dbStatus = rsvp === "yes" ? "attending" : rsvp === "no" ? "absent" : "maybe";
+
+    // Optimistic local update first
     const currentList = getEvents();
     const updatedEvents = currentList.map((e) => {
       if (e.id === eventId) {
-        let yesDiff = 0;
-        let noDiff = 0;
-        let maybeDiff = 0;
-
+        let yesDiff = 0, noDiff = 0, maybeDiff = 0;
         if (e.userRSVP === "yes") yesDiff = -1;
         else if (e.userRSVP === "no") noDiff = -1;
         else if (e.userRSVP === "maybe") maybeDiff = -1;
-
         if (rsvp === "yes") yesDiff += 1;
         else if (rsvp === "no") noDiff += 1;
         else if (rsvp === "maybe") maybeDiff += 1;
-
         return {
           ...e,
           userRSVP: rsvp,
@@ -1112,11 +1421,20 @@ export default function DashboardPage() {
       }
       return e;
     });
+    setEvents({ ...events, [selectedCommunityId]: updatedEvents });
 
-    setEvents({
-      ...events,
-      [selectedCommunityId]: updatedEvents,
-    });
+    // Persist to Supabase
+    try {
+      const { error } = await supabase
+        .from("event_rsvps")
+        .upsert(
+          { event_id: eventId, profile_id: currentUser.id, status: dbStatus, updated_at: new Date().toISOString() },
+          { onConflict: "event_id,profile_id" }
+        );
+      if (error) console.error("Error saving RSVP:", error);
+    } catch (err) {
+      console.error("Error in handleRSVP:", err);
+    }
   };
 
   const handlePaymentSuccess = async () => {
@@ -1208,33 +1526,80 @@ export default function DashboardPage() {
     }
   };
 
-  const handleCreateEvent = (e: React.FormEvent) => {
+  const handleCreateEvent = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedCommunityId || !newEventTitle.trim() || !newEventWhen.trim()) return;
+    if (!selectedCommunityId || !currentUser || !newEventTitle.trim() || !newEventDate) return;
 
-    const newEv = {
-      id: `ev-${Date.now()}`,
-      title: newEventTitle,
-      description: newEventDesc,
-      location: newEventLocation,
-      when: newEventWhen,
-      status: "upcoming" as const,
-      userRSVP: "none" as const,
-      rsvpYesCount: 1,
-      rsvpNoCount: 0,
-      rsvpMaybeCount: 0,
-    };
+    setIsCreatingEvent(true);
+    try {
+      const price = parseFloat(newEventPrice) || 0;
 
-    setEvents({
-      ...events,
-      [selectedCommunityId]: [newEv, ...getEvents()],
-    });
+      // 1. Insert event to DB
+      const { data: newEvData, error: evErr } = await supabase
+        .from("events")
+        .insert({
+          community_id: selectedCommunityId,
+          title: newEventTitle,
+          description: newEventDesc,
+          location: newEventLocation,
+          event_date: new Date(newEventDate).toISOString(),
+          price: price,
+          pocket_id: newEventPocketId || null,
+          created_by: currentUser.id,
+        })
+        .select()
+        .single();
 
-    setNewEventTitle("");
-    setNewEventDesc("");
-    setNewEventLocation("");
-    setNewEventWhen("");
-    setIsCreateEventOpen(false);
+      if (evErr || !newEvData) {
+        Swal.fire({ title: "Gagal", text: `Gagal membuat agenda: ${evErr?.message}`, icon: "error", confirmButtonColor: activeCommunity?.primaryColor || "#6366f1" });
+        return;
+      }
+
+      // 2. If paid event, create dues_bills for all members
+      if (price > 0) {
+        const activeMembers = members[selectedCommunityId] || [];
+        if (activeMembers.length > 0) {
+          const billsToInsert = activeMembers.map((member) => ({
+            community_id: selectedCommunityId,
+            profile_id: member.id,
+            title: `Tiket: ${newEventTitle}`,
+            amount: price,
+            due_date: new Date(newEventDate).toISOString().split("T")[0],
+            status: "unpaid",
+            pocket_id: newEventPocketId || null,
+          }));
+
+          const { error: billsErr } = await supabase.from("dues_bills").insert(billsToInsert);
+          if (billsErr) console.error("Error creating event bills:", billsErr);
+        }
+      }
+
+      // 3. Reload events and reset form
+      await fetchEvents(selectedCommunityId, currentUser.id);
+
+      setNewEventTitle("");
+      setNewEventDesc("");
+      setNewEventLocation("");
+      setNewEventWhen("");
+      setNewEventDate("");
+      setNewEventPrice("0");
+      setNewEventPocketId("");
+      setIsCreateEventOpen(false);
+
+      Swal.fire({
+        title: price > 0 ? "Acara & Tagihan Dibuat!" : "Acara Dibuat!",
+        text: price > 0
+          ? `"${newEventTitle}" berhasil ditambahkan. Tagihan tiket Rp ${price.toLocaleString("id-ID")} telah dikirim ke seluruh anggota.`
+          : `"${newEventTitle}" berhasil ditambahkan ke agenda komunitas.`,
+        icon: "success",
+        confirmButtonColor: activeCommunity?.primaryColor || "#6366f1",
+      });
+    } catch (err: any) {
+      console.error(err);
+      Swal.fire({ title: "Kesalahan", text: err.message, icon: "error", confirmButtonColor: activeCommunity?.primaryColor || "#6366f1" });
+    } finally {
+      setIsCreatingEvent(false);
+    }
   };
 
   const handleCreateThread = (e: React.FormEvent) => {
@@ -1337,30 +1702,65 @@ export default function DashboardPage() {
   };
 
   const runArisanKocok = async () => {
+    const activeRound = arisanRounds.find(r => r.status === 'pending');
+    if (!activeRound) {
+      Swal.fire({
+        title: "Peringatan",
+        text: "Tidak ada putaran arisan yang aktif saat ini!",
+        icon: "warning",
+        confirmButtonColor: activeCommunity?.primaryColor || "#6366f1",
+      });
+      return;
+    }
+
     setIsDrawingArisan(true);
     setArisanWinner(null);
 
-    setTimeout(async () => {
-      const activeMembers = members[selectedCommunityId || ""] || [];
-      const drawCandidates = activeMembers.filter((m) => m.name !== profileName);
-      const winnerName = drawCandidates.length > 0 
-        ? drawCandidates[Math.floor(Math.random() * drawCandidates.length)].name 
-        : "Bu Sari";
+    const activeMembers = members[selectedCommunityId || ""] || [];
+    const wonProfileIds = arisanRounds
+      .filter(r => r.winner_profile_id !== null)
+      .map(r => r.winner_profile_id);
+    
+    // Filter candidates who haven't won yet
+    const drawCandidates = activeMembers.filter((m) => !wonProfileIds.includes(m.id));
+    
+    const winner = drawCandidates.length > 0 
+      ? drawCandidates[Math.floor(Math.random() * drawCandidates.length)]
+      : null;
+    const winnerName = winner ? winner.name : "Bu Sari";
+    const winnerId = winner ? winner.id : null;
 
+    setTimeout(async () => {
       setArisanWinner(winnerName);
       setIsDrawingArisan(false);
 
-      if (selectedCommunityId && currentUser) {
+      if (selectedCommunityId && currentUser && winnerId) {
+        // 1. Update the active round record in Supabase
+        const { error: updateRoundErr } = await supabase
+          .from("arisan_rounds")
+          .update({
+            winner_profile_id: winnerId,
+            status: "distributed",
+            drawn_at: new Date().toISOString()
+          })
+          .eq("id", activeRound.id);
+
+        if (updateRoundErr) {
+          console.error("Error updating arisan round in DB:", updateRoundErr);
+        }
+
+        // 2. Update arisan history state
         setArisanHistory({
           ...arisanHistory,
-          [selectedCommunityId]: [`${winnerName} (Putaran ${arisanHistory[selectedCommunityId].length + 1})`, ...arisanHistory[selectedCommunityId]],
+          [selectedCommunityId]: [`${winnerName} (Putaran ${activeRound.round_number})`, ...(arisanHistory[selectedCommunityId] || [])],
         });
 
+        // 3. Update pocket balance
         const communityPockets = pockets[selectedCommunityId] || [];
         const arisanPocket = communityPockets.find(p => p.name.toLowerCase().includes("arisan")) || communityPockets[0];
         
         if (arisanPocket) {
-          const amount = 2500000;
+          const amount = activeRound.total_prize;
           const newBal = Math.max(0, arisanPocket.balance - amount);
 
           // Update pocket balance in Supabase
@@ -1378,7 +1778,7 @@ export default function DashboardPage() {
               profile_id: currentUser.id,
               type: "expense",
               amount: amount,
-              description: `Pemenang Kocokan: ${winnerName}`,
+              description: `Pemenang Kocokan: ${winnerName} (Putaran ${activeRound.round_number})`,
               status: "success",
             })
             .select(`
@@ -1412,9 +1812,13 @@ export default function DashboardPage() {
             });
           }
         }
+
+        // 4. Refresh arisan rounds from Supabase to update the UI
+        await fetchArisanRounds(selectedCommunityId);
       }
     }, 2500);
   };
+
 
   const handleSimulateTagihIuran = () => {
     alert("Notifikasi WhatsApp penagihan iuran berhasil dikirim otomatis ke seluruh anggota yang menunggak!");
@@ -2507,190 +2911,292 @@ export default function DashboardPage() {
               {activeTab === "arisan" && (
                 <div className="space-y-8 animate-fade-in">
                   {/* Title & Header */}
-                  <div>
-                    <h1 className="text-3xl font-extrabold tracking-tight text-zinc-900">Pengelola Arisan</h1>
-                    <p className="mt-1.5 text-sm text-zinc-500">Kocok otomatis arisan komunitas secara transparan & pantau daftar putaran rotasi.</p>
+                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-zinc-150 pb-4">
+                    <div>
+                      <h1 className="text-3xl font-extrabold tracking-tight text-zinc-900">Pengelola Arisan</h1>
+                      <p className="mt-1.5 text-sm text-zinc-500 font-sans">Kocok otomatis arisan komunitas secara transparan & pantau daftar putaran rotasi.</p>
+                    </div>
                   </div>
 
-                  {/* Top Stats Banner */}
-                  <div className="grid gap-4 sm:grid-cols-3">
-                    <Card className="p-5 border border-zinc-200 bg-white rounded-2xl flex flex-col justify-between shadow-xs">
-                      <span className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">Total Pot Arisan</span>
-                      <div className="text-2xl font-black text-zinc-900 mt-1">Rp 2.500.000</div>
-                      <span className="text-[10px] text-zinc-400 mt-2">Akumulasi setoran terkumpul</span>
-                    </Card>
-
-                    <Card className="p-5 border border-zinc-200 bg-white rounded-2xl flex flex-col justify-between shadow-xs">
-                      <span className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">Status Putaran</span>
-                      <div className="text-2xl font-black mt-1" style={{ color: activeCommunity.primaryColor }}>
-                        Putaran Ke-{(arisanHistory[activeCommunity.id] || []).length + 1}
+                  {arisanWinner && !isDrawingArisan && (
+                    <div className="border border-emerald-250 bg-emerald-50/60 p-6 rounded-2xl flex items-center justify-between gap-4 animate-fade-in">
+                      <div className="flex items-center gap-3">
+                        <div className="h-12 w-12 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-2xl shadow-sm">
+                          🎉
+                        </div>
+                        <div>
+                          <div className="text-base font-extrabold text-emerald-800">
+                            Selamat Kepada {arisanWinner}!
+                          </div>
+                          <div className="text-xs text-emerald-600 font-sans">Terpilih sebagai pemenang arisan dan dana pot cair hari ini.</div>
+                        </div>
                       </div>
-                      <span className="text-[10px] text-zinc-400 mt-2">Rotasi aktif sedang berjalan</span>
-                    </Card>
-
-                    <Card className="p-5 border border-zinc-200 bg-white rounded-2xl flex flex-col justify-between shadow-xs">
-                      <span className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">Jadwal Kocok Berikutnya</span>
-                      <div className="text-sm font-bold text-zinc-800 mt-1.5 flex items-center gap-1.5">
-                        <Calendar className="h-4 w-4 text-zinc-450" />
-                        <span>Minggu, 5 Jul · 10:00 WIB</span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-emerald-800 bg-emerald-100/80 px-3 py-1.5 rounded-full border border-emerald-200 font-sans shrink-0">
+                          Cair Lunas
+                        </span>
+                        <button 
+                          onClick={() => setArisanWinner(null)}
+                          className="text-emerald-700 hover:text-emerald-950 font-extrabold text-xs ml-2 cursor-pointer"
+                        >
+                          Tutup
+                        </button>
                       </div>
-                      <span className="text-[10px] text-zinc-400 mt-2">Jadwal rutin bulanan</span>
-                    </Card>
-                  </div>
+                    </div>
+                  )}
 
-                  <div className="grid gap-6 lg:grid-cols-3">
-                    {/* Left & Middle Columns */}
-                    <div className="lg:col-span-2 space-y-6">
-                      
-                      {/* Kocok Arisan Card */}
-                      <Card className="rounded-2xl border border-zinc-200/80 p-6 shadow-sm bg-white space-y-6">
-                        <h3 className="text-base font-bold text-zinc-900">Tombol "Kocok Arisan"</h3>
-                        
-                        {myRole === "Admin" ? (
-                          <div className="border border-zinc-250 bg-zinc-50/50 p-8 rounded-2xl text-center space-y-4">
-                            <Trophy className="h-12 w-12 text-amber-500 mx-auto animate-bounce" />
-                            <div>
-                              <h4 className="font-bold text-zinc-900">Undian Pemenang Acak</h4>
-                              <p className="text-xs text-zinc-505 mt-1 max-w-sm mx-auto">Klik tombol kocok di bawah untuk mengundi nama anggota yang belum menang putaran arisan kali ini.</p>
-                            </div>
+                  {(() => {
+                    const activeRound = arisanRounds.find(r => r.status === 'pending');
+                    
+                    if (!activeRound) {
+                      // CASE 1: Belum Mulai Arisan / Putaran Selesai
+                      return (
+                        <div className="max-w-xl mx-auto text-center py-16 px-4 space-y-6 animate-fade-in bg-white border border-zinc-200/80 rounded-2xl shadow-xs mt-6">
+                          <div className="w-20 h-20 bg-indigo-50 border border-indigo-100 rounded-full flex items-center justify-center mx-auto text-3xl shadow-xs animate-bounce">
+                            🎡
+                          </div>
+                          <div className="space-y-2">
+                            <h2 className="text-2xl font-extrabold text-zinc-900 tracking-tight">Belum Ada Arisan Aktif</h2>
+                            <p className="text-sm text-zinc-500 max-w-sm mx-auto font-sans leading-relaxed">
+                              Mulai putaran arisan baru untuk komunitas <span className="font-semibold text-zinc-800">{activeCommunity?.name}</span>. Seluruh anggota akan menerima tagihan iuran arisan.
+                            </p>
+                          </div>
+                          
+                          {myRole === "Admin" ? (
                             <Button
-                              onClick={runArisanKocok}
-                              disabled={isDrawingArisan}
-                              className="rounded-xl text-white font-bold text-sm px-6 h-11 hover:opacity-90 transition-opacity"
-                              style={{ backgroundColor: activeCommunity.primaryColor }}
+                              onClick={() => {
+                                setArisanInputAmount("50000"); // default
+                                setIsMulaiArisanOpen(true);
+                              }}
+                              className="rounded-xl text-white font-bold text-sm px-8 h-12 shadow-sm hover:opacity-90 hover:scale-[1.01] transition-all"
+                              style={{ backgroundColor: activeCommunity?.primaryColor || "#6366f1" }}
                             >
-                              {isDrawingArisan ? (
-                                <>
-                                  <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                                  Mengundi Nama...
-                                </>
-                              ) : (
-                                "Mulai Kocok Arisan!"
-                              )}
+                              Mulai Arisan Baru
                             </Button>
-                          </div>
-                        ) : (
-                          <div className="border border-zinc-200 bg-zinc-50 p-6 rounded-2xl text-center space-y-2">
-                            <Clock className="h-10 w-10 text-violet-500 mx-auto" />
-                            <h4 className="font-bold text-zinc-900">Kocokan Menunggu Admin</h4>
-                            <p className="text-xs text-zinc-505">Anda masuk sebagai Member. Menunggu Admin/Bendahara untuk mengocok arisan bulan ini.</p>
-                          </div>
-                        )}
+                          ) : (
+                            <div className="bg-zinc-50 border border-zinc-150 rounded-2xl p-4 text-xs text-zinc-500 max-w-xs mx-auto font-sans">
+                              🔒 Menunggu Admin/Bendahara untuk memulai putaran arisan baru.
+                            </div>
+                          )}
 
-                        {isDrawingArisan && (
-                          <div className="border border-violet-200 bg-violet-50/20 p-8 rounded-2xl text-center space-y-3">
-                            <div className="h-12 w-12 border-4 border-violet-600 border-t-transparent rounded-full animate-spin mx-auto" />
-                            <p className="text-sm font-bold text-violet-700">Mengambil nama secara acak dari wadah arisan...</p>
-                          </div>
-                        )}
+                          {/* Historical Rounds inside Case 1 if there are any */}
+                          {arisanRounds.filter(r => r.status === 'distributed').length > 0 && (
+                            <div className="border-t border-zinc-100 pt-6 mt-6 text-left max-w-sm mx-auto space-y-3">
+                              <h4 className="text-xs font-bold text-zinc-400 uppercase tracking-wider">Pemenang Putaran Sebelumnya</h4>
+                              <ul className="space-y-2">
+                                {arisanRounds
+                                  .filter(r => r.status === 'distributed')
+                                  .slice(-3) // last 3 rounds
+                                  .reverse()
+                                  .map((r, idx) => (
+                                    <li key={idx} className="flex items-center justify-between text-xs text-zinc-700 bg-emerald-50/30 border border-emerald-100/50 rounded-xl p-3 font-semibold">
+                                      <span>{r.winner_profile?.full_name || "Anggota"}</span>
+                                      <span className="text-[10px] text-emerald-650 font-bold bg-emerald-100/60 px-2 py-0.5 rounded">
+                                        Putaran {r.round_number}
+                                      </span>
+                                    </li>
+                                  ))}
+                              </ul>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    }
 
-                        {arisanWinner && !isDrawingArisan && (
-                          <div className="border border-emerald-250 bg-emerald-50/60 p-6 rounded-2xl flex items-center justify-between gap-4 animate-fade-in">
-                            <div className="flex items-center gap-3">
-                              <div className="h-12 w-12 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-2xl shadow-sm">
-                                🎉
-                              </div>
-                              <div>
-                                <div className="text-base font-extrabold text-emerald-800">
-                                  Selamat Kepada {arisanWinner}!
+                    // CASE 2: Arisan Sedang Berjalan (Active)
+                    const wonProfileIds = arisanRounds.filter(r => r.winner_profile_id !== null).map(r => r.winner_profile_id);
+                    const historicalRounds = arisanRounds.filter(r => r.status === 'distributed');
+                    const antreanMembers = activeCommunityMembers.filter(m => !wonProfileIds.includes(m.id));
+
+                    return (
+                      <div className="space-y-8 animate-fade-in">
+                        {/* Top Stats Banner */}
+                        <div className="grid gap-4 sm:grid-cols-3">
+                          <Card className="p-5 border border-zinc-200 bg-white rounded-2xl flex flex-col justify-between shadow-xs">
+                            <span className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">Total Pot Arisan</span>
+                            <div className="text-2xl font-black text-indigo-650 mt-1">
+                              Rp {activeRound.total_prize.toLocaleString("id-ID")}
+                            </div>
+                            <span className="text-[10px] text-zinc-400 mt-2 font-sans">Pot hadiah putaran ini</span>
+                          </Card>
+
+                          <Card className="p-5 border border-zinc-200 bg-white rounded-2xl flex flex-col justify-between shadow-xs">
+                            <span className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">Status Putaran</span>
+                            <div className="text-2xl font-black mt-1" style={{ color: activeCommunity?.primaryColor || "#6366f1" }}>
+                              Putaran Ke-{activeRound.round_number}
+                            </div>
+                            <span className="text-[10px] text-zinc-400 mt-2 font-sans">Siklus aktif berjalan</span>
+                          </Card>
+
+                          <Card className="p-5 border border-zinc-200 bg-white rounded-2xl flex flex-col justify-between shadow-xs">
+                            <span className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">Jadwal Kocok Berikutnya</span>
+                            <div className="text-sm font-bold text-zinc-800 mt-1.5 flex items-center gap-1.5">
+                              <Calendar className="h-4 w-4 text-zinc-450" />
+                              <span>Minggu, 5 Jul · 10:00 WIB</span>
+                            </div>
+                            <span className="text-[10px] text-zinc-400 mt-2 font-sans">Jadwal rutin bulanan</span>
+                          </Card>
+                        </div>
+
+                        <div className="grid gap-6 lg:grid-cols-3">
+                          {/* Left & Middle Columns */}
+                          <div className="lg:col-span-2 space-y-6">
+                            
+                            {/* Kocok Arisan Card */}
+                            <Card className="rounded-2xl border border-zinc-200/80 p-6 shadow-sm bg-white space-y-6">
+                              <h3 className="text-base font-bold text-zinc-900">Tombol "Kocok Arisan"</h3>
+                              
+                              {myRole === "Admin" ? (
+                                <div className="border border-zinc-250 bg-zinc-50/50 p-8 rounded-2xl text-center space-y-4">
+                                  <Trophy className="h-12 w-12 text-amber-500 mx-auto animate-bounce" />
+                                  <div>
+                                    <h4 className="font-bold text-zinc-900">Undian Pemenang Acak</h4>
+                                    <p className="text-xs text-zinc-505 mt-1 max-w-sm mx-auto font-sans">Klik tombol kocok di bawah untuk mengundi nama anggota yang belum menang putaran arisan kali ini.</p>
+                                  </div>
+                                  <Button
+                                    onClick={runArisanKocok}
+                                    disabled={isDrawingArisan}
+                                    className="rounded-xl text-white font-bold text-sm px-6 h-11 hover:opacity-90 transition-opacity"
+                                    style={{ backgroundColor: activeCommunity?.primaryColor || "#6366f1" }}
+                                  >
+                                    {isDrawingArisan ? (
+                                      <>
+                                        <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                                        Mengundi Nama...
+                                      </>
+                                    ) : (
+                                      "Mulai Kocok Arisan!"
+                                    )}
+                                  </Button>
                                 </div>
-                                <div className="text-xs text-emerald-600">Terpilih sebagai pemenang arisan dan dana pot cair hari ini.</div>
-                              </div>
-                            </div>
-                            <span className="text-xs font-bold text-emerald-800 bg-emerald-100/80 px-3 py-1.5 rounded-full border border-emerald-200">
-                              Cair Lunas
-                            </span>
-                          </div>
-                        )}
-                      </Card>
-
-                      {/* Status Putaran / Rotasi Lists */}
-                      <Card className="rounded-2xl border border-zinc-200/80 p-6 shadow-sm bg-white space-y-6">
-                        <div>
-                          <h3 className="text-base font-bold text-zinc-900">Status Putaran & Rotasi Pemenang</h3>
-                          <p className="text-xs text-zinc-400 mt-0.5">Daftar pemenang bulanan sebelumnya dan anggota yang masih mengantre.</p>
-                        </div>
-
-                        <div className="grid gap-6 md:grid-cols-2">
-                          {/* Sudah Menang */}
-                          <div className="space-y-3">
-                            <h4 className="text-xs font-bold text-emerald-700 uppercase tracking-wider flex items-center gap-1.5">
-                              <CheckCircle2 className="h-4 w-4" />
-                              Sudah Menang (Rotasi Selesai)
-                            </h4>
-                            <ul className="space-y-2">
-                              {(arisanHistory[activeCommunity.id] || []).length === 0 ? (
-                                <li className="text-xs text-zinc-400 italic p-3 bg-zinc-50 border border-zinc-100 rounded-xl">Belum ada pemenang terdahulu.</li>
                               ) : (
-                                (arisanHistory[activeCommunity.id] || []).map((win, idx) => (
-                                  <li key={idx} className="flex items-center justify-between text-xs text-zinc-700 bg-emerald-50/40 border border-emerald-100 rounded-xl p-3 font-semibold">
-                                    <span>{win.split(" ")[0]}</span>
-                                    <span className="text-[10px] text-emerald-600 font-bold bg-emerald-100/60 px-2 py-0.5 rounded">
-                                      {win.includes("Putaran") ? win.substring(win.indexOf("(") + 1, win.indexOf(")")) : `Putaran ${idx + 1}`}
-                                    </span>
-                                  </li>
-                                ))
+                                <div className="border border-zinc-200 bg-zinc-50 p-6 rounded-2xl text-center space-y-2">
+                                  <Clock className="h-10 w-10 text-violet-500 mx-auto" />
+                                  <h4 className="font-bold text-zinc-900">Kocokan Menunggu Admin</h4>
+                                  <p className="text-xs text-zinc-505 font-sans">Anda masuk sebagai Member. Menunggu Admin/Bendahara untuk mengocok arisan bulan ini.</p>
+                                </div>
                               )}
-                            </ul>
-                          </div>
 
-                          {/* Belum Menang */}
-                          <div className="space-y-3">
-                            <h4 className="text-xs font-bold text-amber-700 uppercase tracking-wider flex items-center gap-1.5">
-                              <Clock className="h-4 w-4" />
-                              Belum Menang (Mengantre)
-                            </h4>
-                            <ul className="space-y-2">
-                              {activeCommunityMembers.filter(m => {
-                                const winnerNames = (arisanHistory[activeCommunity.id] || []).map(win => win.split(" ")[0]);
-                                return !winnerNames.includes(m.name);
-                              }).length === 0 ? (
-                                <li className="text-xs text-zinc-400 italic p-3 bg-zinc-50 border border-zinc-100 rounded-xl">Semua warga telah menang putaran ini!</li>
-                              ) : (
-                                activeCommunityMembers.filter(m => {
-                                  const winnerNames = (arisanHistory[activeCommunity.id] || []).map(win => win.split(" ")[0]);
-                                  return !winnerNames.includes(m.name);
-                                }).map((m) => (
-                                  <li key={m.id} className="flex items-center justify-between text-xs text-zinc-650 bg-zinc-50 border border-zinc-100 rounded-xl p-3 font-medium">
-                                    <span>{m.name}</span>
-                                    <span className="text-[9px] text-zinc-400 font-bold uppercase tracking-wider bg-zinc-100 border border-zinc-200 px-2 py-0.5 rounded">
-                                      Antrean
-                                    </span>
-                                  </li>
-                                ))
+                              {isDrawingArisan && (
+                                <div className="border border-violet-200 bg-violet-55/20 p-8 rounded-2xl text-center space-y-3">
+                                  <div className="h-12 w-12 border-4 border-violet-600 border-t-transparent rounded-full animate-spin mx-auto" />
+                                  <p className="text-sm font-bold text-violet-700 font-sans">Mengambil nama secara acak dari wadah arisan...</p>
+                                </div>
                               )}
-                            </ul>
-                          </div>
-                        </div>
-                      </Card>
-                    </div>
 
-                    {/* Right Column: Daftar Peserta */}
-                    <div className="space-y-6">
-                      <Card className="rounded-2xl border border-zinc-200/80 p-6 shadow-sm bg-white space-y-4">
-                        <div>
-                          <h3 className="text-base font-bold text-zinc-900">Daftar Peserta Arisan</h3>
-                          <p className="text-xs text-zinc-400 mt-0.5">Daftar warga aktif yang ikut dalam kelompok arisan ini.</p>
-                        </div>
+                            </Card>
 
-                        <div className="divide-y divide-zinc-100">
-                          {activeCommunityMembers.map((member) => (
-                            <div key={member.id} className="py-3 flex items-center justify-between gap-2">
-                              <div className="min-w-0">
-                                <span className="text-sm font-semibold text-zinc-900 block truncate">{member.name}</span>
-                                <span className="text-[10px] text-zinc-455 block truncate">{member.phone}</span>
+                            {/* Status Putaran / Rotasi Lists */}
+                            <Card className="rounded-2xl border border-zinc-200/80 p-6 shadow-sm bg-white space-y-6">
+                              <div>
+                                <h3 className="text-base font-bold text-zinc-900">Status Putaran & Rotasi Pemenang</h3>
+                                <p className="text-xs text-zinc-400 mt-0.5 font-sans">Daftar pemenang bulanan sebelumnya dan anggota yang masih mengantre.</p>
                               </div>
-                              <span className="text-[9px] font-extrabold uppercase rounded px-1.5 py-0.5 bg-indigo-50 text-indigo-650 border border-indigo-100">
-                                Peserta
-                              </span>
-                            </div>
-                          ))}
+
+                              <div className="grid gap-6 md:grid-cols-2">
+                                {/* Sudah Menang */}
+                                <div className="space-y-3">
+                                  <h4 className="text-xs font-bold text-emerald-700 uppercase tracking-wider flex items-center gap-1.5">
+                                    <CheckCircle2 className="h-4 w-4" />
+                                    Sudah Menang (Rotasi Selesai)
+                                  </h4>
+                                  <ul className="space-y-2">
+                                    {historicalRounds.length === 0 ? (
+                                      <li className="text-xs text-zinc-400 italic p-3 bg-zinc-50 border border-zinc-100 rounded-xl font-sans">Belum ada pemenang terdahulu.</li>
+                                    ) : (
+                                      historicalRounds.map((r, idx) => (
+                                        <li key={idx} className="flex items-center justify-between text-xs text-zinc-700 bg-emerald-50/40 border border-emerald-100 rounded-xl p-3 font-semibold">
+                                          <span>{r.winner_profile?.full_name || "Anggota"}</span>
+                                          <span className="text-[10px] text-emerald-650 font-bold bg-emerald-100/60 px-2 py-0.5 rounded">
+                                            Putaran {r.round_number}
+                                          </span>
+                                        </li>
+                                      ))
+                                    )}
+                                  </ul>
+                                </div>
+
+                                {/* Belum Menang */}
+                                <div className="space-y-3">
+                                  <h4 className="text-xs font-bold text-amber-700 uppercase tracking-wider flex items-center gap-1.5">
+                                    <Clock className="h-4 w-4" />
+                                    Belum Menang (Mengantre)
+                                  </h4>
+                                  <ul className="space-y-2">
+                                    {antreanMembers.length === 0 ? (
+                                      <li className="text-xs text-zinc-400 italic p-3 bg-zinc-50 border border-zinc-100 rounded-xl font-sans">Semua warga telah menang putaran ini!</li>
+                                    ) : (
+                                      antreanMembers.map((m) => (
+                                        <li key={m.id} className="flex items-center justify-between text-xs text-zinc-655 bg-zinc-50 border border-zinc-100 rounded-xl p-3 font-medium">
+                                          <span>{m.name}</span>
+                                          <span className="text-[9px] text-zinc-400 font-bold uppercase tracking-wider bg-zinc-100 border border-zinc-200 px-2 py-0.5 rounded">
+                                            Antrean
+                                          </span>
+                                        </li>
+                                      ))
+                                    )}
+                                  </ul>
+                                </div>
+                              </div>
+                            </Card>
+                          </div>
+
+                          {/* Right Column: Daftar Peserta */}
+                          <div className="space-y-6">
+                            <Card className="rounded-2xl border border-zinc-200/80 p-6 shadow-sm bg-white space-y-4">
+                              <div>
+                                <h3 className="text-base font-bold text-zinc-900">Daftar Peserta Arisan</h3>
+                                <p className="text-xs text-zinc-400 mt-0.5 font-sans">
+                                  Tagihan iuran untuk Putaran Ke-{activeRound.round_number}.
+                                </p>
+                              </div>
+
+                              <div className="divide-y divide-zinc-100">
+                                {(!arisanBills[selectedCommunityId || ""] || arisanBills[selectedCommunityId || ""].length === 0) ? (
+                                  <div className="py-4 text-center text-xs text-zinc-400 italic">
+                                    Belum ada tagihan arisan untuk putaran ini.
+                                  </div>
+                                ) : (
+                                  arisanBills[selectedCommunityId || ""].map((bill) => (
+                                    <div key={bill.id} className="py-3 flex items-center justify-between gap-2 animate-fade-in">
+                                      <div className="min-w-0">
+                                        <span className="text-sm font-semibold text-zinc-900 block truncate">
+                                          {bill.profile?.full_name || "Anggota"}
+                                        </span>
+                                        <span className="text-[10px] text-zinc-455 block truncate">
+                                          {bill.profile?.phone || "-"}
+                                        </span>
+                                      </div>
+                                      <div className="flex items-center gap-2">
+                                        <span className={`text-[9px] font-extrabold uppercase rounded px-1.5 py-0.5 border ${
+                                          bill.status === "paid"
+                                            ? "bg-emerald-50 text-emerald-700 border-emerald-100"
+                                            : "bg-red-50 text-red-700 border-red-105"
+                                        }`}>
+                                          {bill.status === "paid" ? "Lunas" : "Belum Bayar"}
+                                        </span>
+                                        {myRole === "Admin" && (
+                                          <button
+                                            onClick={() => handleToggleArisanBillStatus(bill.id, bill.status)}
+                                            className="text-[10px] font-bold text-indigo-650 hover:underline shrink-0"
+                                          >
+                                            Ubah
+                                          </button>
+                                        )}
+                                      </div>
+                                    </div>
+                                  ))
+                                )}
+                              </div>
+                            </Card>
+                          </div>
                         </div>
-                      </Card>
-                    </div>
-                  </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
+
 
               {/* --- VIEW: DISCUSSION FORUM --- */}
               {activeTab === "discussion" && (
@@ -2820,7 +3326,15 @@ export default function DashboardPage() {
                     </div>
                     {myRole === "Admin" && (
                       <Button
-                        onClick={() => setIsCreateEventOpen(true)}
+                        onClick={() => {
+                          // Auto-select the Event Fund pocket
+                          const communityPockets = pockets[selectedCommunityId || ""] || [];
+                          const eventPocket = communityPockets.find((p) =>
+                            p.name.toLowerCase().includes("event") || p.name.toLowerCase().includes("acara")
+                          );
+                          setNewEventPocketId(eventPocket?.id || "");
+                          setIsCreateEventOpen(true);
+                        }}
                         className="rounded-xl text-xs font-bold text-white hover:opacity-90"
                         style={{ backgroundColor: activeCommunity.primaryColor }}
                       >
@@ -2831,96 +3345,121 @@ export default function DashboardPage() {
                   </div>
 
                   <div className="grid gap-6 sm:grid-cols-2">
-                    {getEvents().map((ev) => (
-                      <Card key={ev.id} className="rounded-2xl border border-zinc-200/85 bg-white p-6 shadow-sm flex flex-col justify-between min-h-[220px] space-y-4">
-                        <div className="space-y-3">
-                          <div className="flex items-start justify-between">
-                            <span
-                              className="text-[10px] font-bold uppercase rounded-full px-2.5 py-0.5 border"
-                              style={{
-                                backgroundColor: ev.status === "done" ? "#ecfdf5" : `${activeCommunity.primaryColor}10`,
-                                color: ev.status === "done" ? "#047857" : activeCommunity.primaryColor,
-                                borderColor: ev.status === "done" ? "#a7f3d0" : `${activeCommunity.primaryColor}30`,
-                              }}
-                            >
-                              {ev.status === "done" ? "Selesai" : "Mendatang"}
-                            </span>
-                            <Calendar className="h-4.5 w-4.5 text-zinc-400" />
-                          </div>
-                          <div>
-                            <h3 className="text-base font-bold text-zinc-955">{ev.title}</h3>
-                            {ev.description && <p className="text-xs text-zinc-500 mt-1">{ev.description}</p>}
-                            <div className="text-[11px] text-zinc-500 mt-2 space-y-1 bg-zinc-50 p-2.5 border border-zinc-150 rounded-xl">
-                              <div>📍 <span className="font-semibold text-zinc-700">Lokasi:</span> {ev.location || "Balai Warga"}</div>
-                              <div>📅 <span className="font-semibold text-zinc-700">Waktu:</span> {ev.when}</div>
+                    {getEvents().length === 0 ? (
+                      <div className="sm:col-span-2 flex flex-col items-center justify-center py-16 text-center">
+                        <div className="w-16 h-16 rounded-2xl bg-zinc-100 flex items-center justify-center mb-4">
+                          <Calendar className="h-8 w-8 text-zinc-350" />
+                        </div>
+                        <h3 className="text-sm font-bold text-zinc-600 mb-1">Belum Ada Agenda</h3>
+                        <p className="text-xs text-zinc-400 max-w-xs">
+                          {myRole === "Admin"
+                            ? "Klik \"Buat Acara Baru\" untuk menambahkan kegiatan pertama komunitas ini."
+                            : "Belum ada agenda yang dijadwalkan oleh admin."}
+                        </p>
+                      </div>
+                    ) : (
+                      getEvents().map((ev) => (
+                        <Card key={ev.id} className="rounded-2xl border border-zinc-200/85 bg-white p-6 shadow-sm flex flex-col justify-between min-h-[220px] space-y-4">
+                          <div className="space-y-3">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span
+                                  className="text-[10px] font-bold uppercase rounded-full px-2.5 py-0.5 border"
+                                  style={{
+                                    backgroundColor: ev.status === "done" ? "#ecfdf5" : `${activeCommunity.primaryColor}10`,
+                                    color: ev.status === "done" ? "#047857" : activeCommunity.primaryColor,
+                                    borderColor: ev.status === "done" ? "#a7f3d0" : `${activeCommunity.primaryColor}30`,
+                                  }}
+                                >
+                                  {ev.status === "done" ? "Selesai" : "Mendatang"}
+                                </span>
+                                {ev.price && ev.price > 0 ? (
+                                  <span className="text-[10px] font-bold uppercase rounded-full px-2.5 py-0.5 border border-amber-200 bg-amber-50 text-amber-700">
+                                    💰 Rp {ev.price.toLocaleString("id-ID")}
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] font-bold uppercase rounded-full px-2.5 py-0.5 border border-emerald-200 bg-emerald-50 text-emerald-700">
+                                    ✓ Gratis
+                                  </span>
+                                )}
+                              </div>
+                              <Calendar className="h-4 w-4 text-zinc-400 shrink-0 mt-0.5" />
+                            </div>
+                            <div>
+                              <h3 className="text-base font-bold text-zinc-900">{ev.title}</h3>
+                              {ev.description && <p className="text-xs text-zinc-500 mt-1 leading-relaxed">{ev.description}</p>}
+                              <div className="text-[11px] text-zinc-500 mt-2 space-y-1 bg-zinc-50 p-2.5 border border-zinc-150 rounded-xl font-sans">
+                                <div>📍 <span className="font-semibold text-zinc-700">Lokasi:</span> {ev.location || "Balai Warga"}</div>
+                                <div>📅 <span className="font-semibold text-zinc-700">Waktu:</span> {ev.when}</div>
+                              </div>
                             </div>
                           </div>
-                        </div>
 
-                        {/* Sintesis Data RSVP */}
-                        <div className="bg-zinc-50/50 p-3 rounded-xl border border-zinc-100 flex items-center justify-around gap-2 text-center text-[10px]">
-                          <div>
-                            <span className="font-extrabold text-emerald-600 block text-xs">{ev.rsvpYesCount}</span>
-                            <span className="text-zinc-400 font-semibold uppercase">Hadir</span>
+                          {/* Sintesis Data RSVP */}
+                          <div className="bg-zinc-50/50 p-3 rounded-xl border border-zinc-100 flex items-center justify-around gap-2 text-center text-[10px]">
+                            <div>
+                              <span className="font-extrabold text-emerald-600 block text-xs">{ev.rsvpYesCount}</span>
+                              <span className="text-zinc-400 font-semibold uppercase">Hadir</span>
+                            </div>
+                            <div className="h-6 w-px bg-zinc-200" />
+                            <div>
+                              <span className="font-extrabold text-red-500 block text-xs">{ev.rsvpNoCount}</span>
+                              <span className="text-zinc-400 font-semibold uppercase">Absen</span>
+                            </div>
+                            <div className="h-6 w-px bg-zinc-200" />
+                            <div>
+                              <span className="font-extrabold text-amber-600 block text-xs">{ev.rsvpMaybeCount}</span>
+                              <span className="text-zinc-400 font-semibold uppercase">Ragu-Ragu</span>
+                            </div>
                           </div>
-                          <div className="h-6 w-px bg-zinc-200" />
-                          <div>
-                            <span className="font-extrabold text-red-650 block text-xs">{ev.rsvpNoCount}</span>
-                            <span className="text-zinc-400 font-semibold uppercase">Absen</span>
-                          </div>
-                          <div className="h-6 w-px bg-zinc-200" />
-                          <div>
-                            <span className="font-extrabold text-amber-600 block text-xs">{ev.rsvpMaybeCount}</span>
-                            <span className="text-zinc-400 font-semibold uppercase">Ragu-Ragu</span>
-                          </div>
-                        </div>
 
-                        <div className="pt-3 border-t border-zinc-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 text-xs">
-                          {ev.status === "done" ? (
-                            <span className="text-[10px] text-zinc-400 font-semibold">Telah terlaksana</span>
-                          ) : (
-                            <>
-                              <span className="text-zinc-555 font-semibold">Konfirmasi Kehadiran:</span>
-                              <div className="flex gap-1.5">
-                                <button
-                                  onClick={() => handleRSVP(ev.id, "yes")}
-                                  className="px-3.5 py-1.5 rounded-xl text-xs font-bold border transition-colors shadow-xs"
-                                  style={{
-                                    backgroundColor: ev.userRSVP === "yes" ? activeCommunity.primaryColor : "#ffffff",
-                                    color: ev.userRSVP === "yes" ? "#ffffff" : "#52525b",
-                                    borderColor: ev.userRSVP === "yes" ? activeCommunity.primaryColor : "#e4e4e7",
-                                  }}
-                                >
-                                  Hadir
-                                </button>
-                                <button
-                                  onClick={() => handleRSVP(ev.id, "no")}
-                                  className="px-3.5 py-1.5 rounded-xl text-xs font-bold border transition-colors shadow-xs"
-                                  style={{
-                                    backgroundColor: ev.userRSVP === "no" ? "#ef4444" : "#ffffff",
-                                    color: ev.userRSVP === "no" ? "#ffffff" : "#52525b",
-                                    borderColor: ev.userRSVP === "no" ? "#ef4444" : "#e4e4e7",
-                                  }}
-                                >
-                                  Absen
-                                </button>
-                                <button
-                                  onClick={() => handleRSVP(ev.id, "maybe")}
-                                  className="px-3.5 py-1.5 rounded-xl text-xs font-bold border transition-colors shadow-xs"
-                                  style={{
-                                    backgroundColor: ev.userRSVP === "maybe" ? "#f59e0b" : "#ffffff",
-                                    color: ev.userRSVP === "maybe" ? "#ffffff" : "#52525b",
-                                    borderColor: ev.userRSVP === "maybe" ? "#f59e0b" : "#e4e4e7",
-                                  }}
-                                >
-                                  Ragu
-                                </button>
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      </Card>
-                    ))}
+                          <div className="pt-3 border-t border-zinc-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 text-xs">
+                            {ev.status === "done" ? (
+                              <span className="text-[10px] text-zinc-400 font-semibold">Telah terlaksana</span>
+                            ) : (
+                              <>
+                                <span className="text-zinc-600 font-semibold text-[11px]">Konfirmasi Kehadiran:</span>
+                                <div className="flex gap-1.5">
+                                  <button
+                                    onClick={() => handleRSVP(ev.id, "yes")}
+                                    className="px-3.5 py-1.5 rounded-xl text-xs font-bold border transition-all shadow-xs"
+                                    style={{
+                                      backgroundColor: ev.userRSVP === "yes" ? activeCommunity.primaryColor : "#ffffff",
+                                      color: ev.userRSVP === "yes" ? "#ffffff" : "#52525b",
+                                      borderColor: ev.userRSVP === "yes" ? activeCommunity.primaryColor : "#e4e4e7",
+                                    }}
+                                  >
+                                    ✓ Hadir
+                                  </button>
+                                  <button
+                                    onClick={() => handleRSVP(ev.id, "no")}
+                                    className="px-3.5 py-1.5 rounded-xl text-xs font-bold border transition-all shadow-xs"
+                                    style={{
+                                      backgroundColor: ev.userRSVP === "no" ? "#ef4444" : "#ffffff",
+                                      color: ev.userRSVP === "no" ? "#ffffff" : "#52525b",
+                                      borderColor: ev.userRSVP === "no" ? "#ef4444" : "#e4e4e7",
+                                    }}
+                                  >
+                                    ✗ Absen
+                                  </button>
+                                  <button
+                                    onClick={() => handleRSVP(ev.id, "maybe")}
+                                    className="px-3.5 py-1.5 rounded-xl text-xs font-bold border transition-all shadow-xs"
+                                    style={{
+                                      backgroundColor: ev.userRSVP === "maybe" ? "#f59e0b" : "#ffffff",
+                                      color: ev.userRSVP === "maybe" ? "#ffffff" : "#52525b",
+                                      borderColor: ev.userRSVP === "maybe" ? "#f59e0b" : "#e4e4e7",
+                                    }}
+                                  >
+                                    ? Ragu
+                                  </button>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        </Card>
+                      ))
+                    )}
                   </div>
                 </div>
               )}
@@ -2999,6 +3538,68 @@ export default function DashboardPage() {
       {/* ======================================================== */}
       {/* ======================= MODALS ========================= */}
       {/* ======================================================== */}
+
+      {/* Modal: Mulai Arisan */}
+      {isMulaiArisanOpen && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/40 backdrop-blur-xs p-4 flex justify-center items-center">
+          <Card className="w-full max-w-md bg-white p-6 rounded-2xl border border-zinc-200 shadow-xl relative animate-fade-in">
+            <button onClick={() => setIsMulaiArisanOpen(false)} className="absolute right-4 top-4 text-zinc-450 hover:text-zinc-650">
+              <X className="h-5 w-5" />
+            </button>
+            <h2 className="text-xl font-bold text-zinc-955 mb-1">Mulai Arisan Baru</h2>
+            <p className="text-xs text-zinc-500 mb-6">Tentukan nominal iuran arisan per anggota untuk putaran aktif ini.</p>
+            
+            <form onSubmit={handleConfirmMulaiArisan} className="space-y-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="arisan-amount">Nominal Arisan per Anggota (Rp)</Label>
+                <Input
+                  id="arisan-amount"
+                  type="number"
+                  required
+                  value={arisanInputAmount}
+                  onChange={(e) => setArisanInputAmount(e.target.value)}
+                  placeholder="Contoh: 50000"
+                  className="rounded-xl h-11"
+                />
+              </div>
+
+              {/* Informational preview */}
+              <div className="bg-zinc-50 border border-zinc-150 p-4 rounded-xl text-xs space-y-1 text-zinc-555">
+                <div className="flex justify-between">
+                  <span>Jumlah Peserta:</span>
+                  <span className="font-semibold text-zinc-900">{(members[selectedCommunityId || ""] || []).length} Orang</span>
+                </div>
+                <div className="flex justify-between border-t border-zinc-250 pt-1.5 mt-1.5 font-bold text-zinc-800">
+                  <span>Proyeksi Total Pot Hadiah:</span>
+                  <span className="text-indigo-650">
+                    Rp {((parseFloat(arisanInputAmount) || 0) * (members[selectedCommunityId || ""] || []).length).toLocaleString("id-ID")}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex gap-3 justify-end pt-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setIsMulaiArisanOpen(false)}
+                  disabled={isLoadingArisan}
+                  className="rounded-xl text-xs font-semibold h-10 px-4"
+                >
+                  Batal
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={isLoadingArisan}
+                  className="rounded-xl text-white font-bold text-xs h-10 px-5"
+                  style={{ backgroundColor: activeCommunity?.primaryColor || "#6366f1" }}
+                >
+                  {isLoadingArisan ? "Memproses..." : "Konfirmasi Mulai Arisan"}
+                </Button>
+              </div>
+            </form>
+          </Card>
+        </div>
+      )}
 
       {/* 1. Modal: Buat Komunitas */}
       {isCreateCommOpen && (
@@ -3441,63 +4042,130 @@ export default function DashboardPage() {
 
       {/* 6. Modal: Buat Agenda Baru */}
       {isCreateEventOpen && activeCommunity && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
-          <Card className="w-full max-w-md bg-white p-6 rounded-2xl border border-zinc-200 shadow-xl relative animate-fade-in">
-            <button onClick={() => setIsCreateEventOpen(false)} className="absolute right-4 top-4 text-zinc-400 hover:text-zinc-650">
-              <X className="h-5 w-5" />
-            </button>
-            <h2 className="text-xl font-bold text-zinc-955 mb-1">Buat Agenda Baru</h2>
-            <p className="text-xs text-zinc-500 mb-6">Tambahkan jadwal kegiatan warga terdekat.</p>
-            
-            <form onSubmit={handleCreateEvent} className="space-y-4">
+        <div className="fixed inset-0 z-50 overflow-y-auto flex items-start justify-center bg-black/40 backdrop-blur-xs p-4">
+          <Card className="w-full max-w-lg bg-white p-0 rounded-2xl border border-zinc-200 shadow-xl relative animate-fade-in my-8 overflow-hidden">
+            {/* Header */}
+            <div className="p-6 pb-4 border-b border-zinc-100">
+              <button onClick={() => setIsCreateEventOpen(false)} className="absolute right-4 top-4 text-zinc-400 hover:text-zinc-650">
+                <X className="h-5 w-5" />
+              </button>
+              <h2 className="text-xl font-bold text-zinc-900">Buat Agenda Baru</h2>
+              <p className="text-xs text-zinc-500 mt-0.5 font-sans">Tambahkan kegiatan komunitas, atur tiket, dan hubungkan ke kantong dana.</p>
+            </div>
+
+            <form onSubmit={handleCreateEvent} className="p-6 space-y-4">
+              {/* Nama Kegiatan */}
               <div className="space-y-1.5">
-                <Label htmlFor="event-title">Nama Kegiatan</Label>
+                <Label htmlFor="event-title">Nama Kegiatan <span className="text-red-500">*</span></Label>
                 <Input
                   id="event-title"
                   required
                   value={newEventTitle}
                   onChange={(e) => setNewEventTitle(e.target.value)}
                   placeholder="Contoh: Rapat Koordinasi RT, Kerja Bakti Bersama"
+                  className="rounded-xl h-10"
                 />
               </div>
 
+              {/* Deskripsi */}
               <div className="space-y-1.5">
                 <Label htmlFor="event-desc">Deskripsi Kegiatan</Label>
                 <textarea
                   id="event-desc"
                   rows={2}
-                  className="flex w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 focus:outline-none focus:ring-1 focus:ring-indigo-600"
+                  className="flex w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-sans"
                   value={newEventDesc}
                   onChange={(e) => setNewEventDesc(e.target.value)}
                   placeholder="Tujuan atau detail agenda pertemuan..."
                 />
               </div>
 
+              {/* Lokasi */}
               <div className="space-y-1.5">
-                <Label htmlFor="event-location">Lokasi Kegiatan</Label>
+                <Label htmlFor="event-location">Lokasi / Link Online <span className="text-red-500">*</span></Label>
                 <Input
                   id="event-location"
                   required
                   value={newEventLocation}
                   onChange={(e) => setNewEventLocation(e.target.value)}
-                  placeholder="Contoh: Balai Warga RT 01, Halaman Masjid"
+                  placeholder="Contoh: Balai Warga RT 01 / https://meet.google.com/..."
+                  className="rounded-xl h-10"
                 />
               </div>
 
+              {/* Tanggal & Waktu */}
               <div className="space-y-1.5">
-                <Label htmlFor="event-when">Jadwal & Waktu</Label>
+                <Label htmlFor="event-date">Tanggal & Waktu Pelaksanaan <span className="text-red-500">*</span></Label>
                 <Input
-                  id="event-when"
+                  id="event-date"
+                  type="datetime-local"
                   required
-                  value={newEventWhen}
-                  onChange={(e) => setNewEventWhen(e.target.value)}
-                  placeholder="Contoh: Sabtu, 28 Jun · 19.30 WIB"
+                  value={newEventDate}
+                  onChange={(e) => setNewEventDate(e.target.value)}
+                  className="rounded-xl h-10"
                 />
               </div>
 
-              <div className="pt-2">
-                <Button type="submit" className="w-full h-11 rounded-xl text-white font-bold text-sm hover:opacity-90" style={{ backgroundColor: activeCommunity.primaryColor }}>
-                  Buat Agenda
+              {/* Biaya & Kantong */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="event-price">Biaya Tiket (Rp)</Label>
+                  <Input
+                    id="event-price"
+                    type="number"
+                    min="0"
+                    value={newEventPrice}
+                    onChange={(e) => setNewEventPrice(e.target.value)}
+                    placeholder="0 = Gratis"
+                    className="rounded-xl h-10"
+                  />
+                  <p className="text-[10px] text-zinc-400 font-sans">Isi 0 jika gratis</p>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="event-pocket">Target Kantong Dana</Label>
+                  <select
+                    id="event-pocket"
+                    value={newEventPocketId}
+                    onChange={(e) => setNewEventPocketId(e.target.value)}
+                    className="flex w-full h-10 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-sans"
+                  >
+                    <option value="">— Tidak Ada —</option>
+                    {(pockets[selectedCommunityId || ""] || []).map(p => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </select>
+                  <p className="text-[10px] text-zinc-400 font-sans">Untuk Event Fund</p>
+                </div>
+              </div>
+
+              {/* Preview Info */}
+              {parseFloat(newEventPrice) > 0 && (
+                <div className="bg-amber-50 border border-amber-150 rounded-xl p-3 text-xs text-amber-800 flex items-start gap-2 font-sans">
+                  <span className="text-base">💰</span>
+                  <div>
+                    <span className="font-bold">Acara Berbayar:</span> Tagihan tiket Rp {parseFloat(newEventPrice).toLocaleString("id-ID")} akan otomatis dikirim ke seluruh <span className="font-semibold">{(members[selectedCommunityId || ""] || []).length} anggota</span> komunitas ini setelah acara dibuat.
+                  </div>
+                </div>
+              )}
+
+              {/* Submit */}
+              <div className="pt-2 flex gap-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setIsCreateEventOpen(false)}
+                  disabled={isCreatingEvent}
+                  className="flex-1 rounded-xl h-11 text-sm font-semibold"
+                >
+                  Batal
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={isCreatingEvent}
+                  className="flex-1 h-11 rounded-xl text-white font-bold text-sm hover:opacity-90"
+                  style={{ backgroundColor: activeCommunity.primaryColor }}
+                >
+                  {isCreatingEvent ? "Menyimpan..." : "Buat Agenda"}
                 </Button>
               </div>
             </form>
