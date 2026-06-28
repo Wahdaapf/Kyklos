@@ -397,7 +397,29 @@ export default function DashboardPage() {
   const [paymentChannels, setPaymentChannels] = useState<any[]>([]);
   const [selectedPaymentChannel, setSelectedPaymentChannel] = useState<string | null>(null);
 
+  const [logoErrors, setLogoErrors] = useState<Record<string, boolean>>({});
+
   const activeCommunity = communities.find((c) => c.id === selectedCommunityId);
+
+  const getLogoUrl = (logo: string | undefined): string | null => {
+    if (!logo) return null;
+    if (logo.startsWith("http://") || logo.startsWith("https://") || logo.startsWith("data:")) {
+      return logo;
+    }
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://oexqytcajybyoudwinbu.supabase.co";
+    return `${supabaseUrl}/storage/v1/object/public/logos/${logo}`;
+  };
+
+  const getContrastText = (hexColor: string | undefined): string => {
+    if (!hexColor) return "#ffffff";
+    const cleanHex = hexColor.replace("#", "");
+    if (cleanHex.length !== 6) return "#ffffff";
+    const r = parseInt(cleanHex.substring(0, 2), 16);
+    const g = parseInt(cleanHex.substring(2, 4), 16);
+    const b = parseInt(cleanHex.substring(4, 6), 16);
+    const yiq = (r * 299 + g * 587 + b * 114) / 1000;
+    return yiq >= 150 ? "#09090b" : "#ffffff";
+  };
 
   // Load initial data from Supabase
   useEffect(() => {
@@ -2096,12 +2118,22 @@ export default function DashboardPage() {
     const realCode = activeCommunity.inviteCode;
 
     if (!realCode) {
-      alert("Gagal menyalin kode undangan: kode tidak ditemukan!");
+      Swal.fire({
+        title: "Gagal",
+        text: "Gagal menyalin kode undangan: kode tidak ditemukan!",
+        icon: "error",
+        confirmButtonColor: activeCommunity?.primaryColor || "#6366f1",
+      });
       return;
     }
 
     navigator.clipboard.writeText(realCode);
-    alert(`Kode undangan "${realCode}" berhasil disalin! Bagikan ke warga.`);
+    Swal.fire({
+      title: "Berhasil Disalin!",
+      text: `Kode undangan "${realCode}" berhasil disalin ke clipboard! Bagikan ke warga.`,
+      icon: "success",
+      confirmButtonColor: activeCommunity?.primaryColor || "#6366f1",
+    });
   };
 
   const runArisanKocok = async () => {
@@ -2425,7 +2457,12 @@ export default function DashboardPage() {
     fileInput.onchange = (e: any) => {
       const file = e.target.files[0];
       if (file) {
-        setNewCommLogoName(file.name);
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const base64String = reader.result as string;
+          setNewCommLogoName(base64String);
+        };
+        reader.readAsDataURL(file);
       }
     };
     fileInput.click();
@@ -2688,13 +2725,18 @@ export default function DashboardPage() {
                           >
                             <div className="space-y-4">
                               <div className="flex items-center justify-between">
-                                {comm.logoName ? (
-                                  <div className="h-11 w-11 rounded-xl bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold border border-indigo-200 shadow-sm overflow-hidden text-xs">
-                                    {comm.logoName.substring(0, 5)}...
+                                {comm.logoName && !logoErrors[comm.id] ? (
+                                  <div className="h-11 w-11 rounded-xl bg-zinc-50 border border-zinc-200/85 shadow-sm overflow-hidden shrink-0">
+                                    <img
+                                      src={getLogoUrl(comm.logoName) || ""}
+                                      alt={comm.name}
+                                      className="h-full w-full object-cover"
+                                      onError={() => setLogoErrors((prev) => ({ ...prev, [comm.id]: true }))}
+                                    />
                                   </div>
                                 ) : (
                                   <div
-                                    className="h-11 w-11 rounded-xl flex items-center justify-center text-white font-bold text-lg shadow-sm"
+                                    className="h-11 w-11 rounded-xl flex items-center justify-center text-white font-bold text-lg shadow-sm shrink-0"
                                     style={{ backgroundColor: comm.primaryColor }}
                                   >
                                     {comm.name.charAt(0)}
@@ -2797,205 +2839,246 @@ export default function DashboardPage() {
       {/* --- STATE 2: ACTIVE COMMUNITY DASHBOARD (Sidebar + Page Switcher) --- */}
       {selectedCommunityId !== null && activeCommunity && (
         <>
-          {/* Mobile Top Bar */}
-          <header className="md:hidden flex h-16 w-full items-center justify-between border-b border-zinc-200 bg-white px-6 sticky top-0 z-40">
-            <div className="flex items-center gap-2">
-              {activeCommunity.logoName ? (
-                <div className="h-8 w-8 rounded-lg bg-white/20 text-white flex items-center justify-center font-bold text-[8px] border border-white/10 shadow-sm shrink-0 overflow-hidden">
-                  {activeCommunity.logoName.substring(0, 3)}..
-                </div>
-              ) : (
-                <div
-                  className="h-8 w-8 rounded-lg flex items-center justify-center text-white font-bold text-sm shadow-sm"
-                  style={{ backgroundColor: activeCommunity.primaryColor }}
-                >
-                  {activeCommunity.name.charAt(0)}
-                </div>
-              )}
-              <span className="text-base font-bold text-zinc-900 truncate max-w-[150px]">
-                {activeCommunity.name}
-              </span>
-            </div>
-            <Button variant="ghost" size="icon" onClick={() => setMobileMenuOpen(true)}>
-              <Menu className="h-5 w-5" />
-            </Button>
-          </header>
-
-          {/* SIDEBAR (Desktop Layout) */}
-          <aside className={`fixed inset-y-0 left-0 z-50 w-64 border-r border-zinc-200/80 bg-white p-5 flex flex-col justify-between transition-transform duration-350 md:sticky md:translate-x-0 md:h-screen ${mobileMenuOpen ? "translate-x-0" : "-translate-x-full"
-            }`}>
-            <div className="space-y-6">
-              {/* Close button for Mobile Sidebar */}
-              <div className="flex items-center justify-between md:hidden pb-2 border-b border-zinc-100">
-                <span className="text-sm font-bold text-zinc-500">Navigasi Komunitas</span>
-                <button onClick={() => setMobileMenuOpen(false)} className="text-zinc-400 hover:text-zinc-655">
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
-
-              {/* Top Section: Community Logo & Info */}
-              <div className="space-y-4">
-                <div className="flex items-center gap-3">
-                  {activeCommunity.logoName ? (
-                    <div className="h-11 w-11 rounded-xl bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-700 font-bold text-[10px] shadow-sm shrink-0 overflow-hidden p-1 text-center leading-tight">
-                      {activeCommunity.logoName.substring(0, 5)}...
+          {(() => {
+            const sidebarContrastColor = getContrastText(activeCommunity.primaryColor);
+            const isLightSidebar = sidebarContrastColor === "#09090b";
+            return (
+              <header
+                className="md:hidden flex h-16 w-full items-center justify-between px-6 sticky top-0 z-40"
+                style={{
+                  backgroundColor: activeCommunity.primaryColor,
+                  color: sidebarContrastColor,
+                  borderBottom: `1px solid ${isLightSidebar ? "rgba(9,9,11,0.08)" : "rgba(255,255,255,0.12)"}`
+                }}
+              >
+                <div className="flex items-center gap-2">
+                  {activeCommunity.logoName && !logoErrors[activeCommunity.id] ? (
+                    <div className="h-8 w-8 rounded-lg bg-zinc-50 border border-zinc-200 shadow-sm overflow-hidden shrink-0">
+                      <img
+                        src={getLogoUrl(activeCommunity.logoName) || ""}
+                        alt={activeCommunity.name}
+                        className="h-full w-full object-cover"
+                        onError={() => setLogoErrors((prev) => ({ ...prev, [activeCommunity.id]: true }))}
+                      />
                     </div>
                   ) : (
                     <div
-                      className="h-11 w-11 rounded-xl flex items-center justify-center text-white font-black text-lg shadow-sm shrink-0"
+                      className="h-8 w-8 rounded-lg flex items-center justify-center text-white font-bold text-sm shadow-sm shrink-0"
                       style={{ backgroundColor: activeCommunity.primaryColor }}
                     >
                       {activeCommunity.name.charAt(0)}
                     </div>
                   )}
-                  <div className="min-w-0">
-                    <h2 className="text-base font-bold text-zinc-955 truncate leading-snug">{activeCommunity.name}</h2>
-                    <span className="text-[10px] text-zinc-400 font-medium capitalize">{activeCommunity.type}</span>
-                  </div>
-                </div>
-
-                {/* User mini info & role */}
-                <div className="rounded-xl bg-zinc-50 border border-zinc-100 p-3 space-y-2">
-                  <div className="text-xs">
-                    <div className="font-semibold text-zinc-900 truncate">{profileName}</div>
-                    <div className="text-[10px] text-zinc-400 mt-0.5">Anggota Aktif</div>
-                  </div>
-                  <span className={`inline-block rounded-full px-2.5 py-0.5 text-[9px] font-bold ${myRole === "Admin" ? "bg-red-50 text-red-655 border border-red-100" : "bg-emerald-50 text-emerald-600 border border-emerald-100"
-                    }`}>
-                    {myRole === "Admin" ? "Admin" : "Member"}
+                  <span className="text-base font-bold truncate max-w-[150px]" style={{ color: sidebarContrastColor }}>
+                    {activeCommunity.name}
                   </span>
                 </div>
-
-                {/* Ganti Komunitas Button */}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    setSelectedCommunityId(null);
-                    setMobileMenuOpen(false);
-                  }}
-                  className="w-full rounded-xl border-zinc-200 text-xs font-semibold text-zinc-650 hover:bg-zinc-50 h-9 justify-start"
-                >
-                  <ArrowLeft className="mr-1.5 h-3.5 w-3.5" />
-                  Ganti Komunitas
+                <Button variant="ghost" size="icon" onClick={() => setMobileMenuOpen(true)} style={{ color: sidebarContrastColor }}>
+                  <Menu className="h-5 w-5" />
                 </Button>
-              </div>
+              </header>
+            );
+          })()}
 
-              {/* Navigation Menu */}
-              <nav className="space-y-1">
-                {/* Derived: show Arisan only if an arisan pocket exists */}
-                {(() => {
-                  const communityPockets = pockets[activeCommunity.id] || [];
-                  const hasArisanPocket = communityPockets.some((p) =>
-                    p.name.toLowerCase().includes("arisan")
-                  );
-                  const hasEventPocket = communityPockets.some((p) =>
-                    p.name.toLowerCase().includes("event") ||
-                    p.name.toLowerCase().includes("acara") ||
-                    p.name.toLowerCase().includes("fund")
-                  );
-                  return (
-                    <>
+          {(() => {
+            const sidebarContrastColor = getContrastText(activeCommunity.primaryColor);
+            const isLightSidebar = sidebarContrastColor === "#09090b";
+            const navButtonStyle = (tab: string) => {
+              const isActive = activeTab === tab;
+              if (isLightSidebar) {
+                return {
+                  backgroundColor: isActive ? "rgba(9, 9, 11, 0.08)" : "transparent",
+                  color: isActive ? "#09090b" : "#52525b",
+                  borderLeft: isActive ? "3px solid #09090b" : "none",
+                };
+              } else {
+                return {
+                  backgroundColor: isActive ? "rgba(255, 255, 255, 0.15)" : "transparent",
+                  color: isActive ? "#ffffff" : "rgba(255, 255, 255, 0.7)",
+                  borderLeft: isActive ? "3px solid #ffffff" : "none",
+                };
+              }
+            };
 
-                <button
-                  onClick={() => { setActiveTab("dashboard"); setMobileMenuOpen(false); }}
-                  className="flex w-full items-center gap-3 px-3 py-2 text-sm font-semibold rounded-xl transition-all"
-                  style={{
-                    backgroundColor: activeTab === "dashboard" ? `${activeCommunity.primaryColor}10` : "transparent",
-                    color: activeTab === "dashboard" ? activeCommunity.primaryColor : "#52525b",
-                    borderLeft: activeTab === "dashboard" ? `3px solid ${activeCommunity.primaryColor}` : "none",
-                  }}
-                >
-                  <Sparkles className="h-4.5 w-4.5" />
-                  Dashboard
-                </button>
-
-                <button
-                  onClick={() => { setActiveTab("wallet"); setMobileMenuOpen(false); }}
-                  className="flex w-full items-center gap-3 px-3 py-2 text-sm font-semibold rounded-xl transition-all"
-                  style={{
-                    backgroundColor: activeTab === "wallet" ? `${activeCommunity.primaryColor}10` : "transparent",
-                    color: activeTab === "wallet" ? activeCommunity.primaryColor : "#52525b",
-                    borderLeft: activeTab === "wallet" ? `3px solid ${activeCommunity.primaryColor}` : "none",
-                  }}
-                >
-                  <Wallet className="h-4.5 w-4.5" />
-                  Dompet & Iuran
-                </button>
-
-                      {hasArisanPocket && (
-                        <button
-                          onClick={() => { setActiveTab("arisan"); setMobileMenuOpen(false); }}
-                          className="flex w-full items-center gap-3 px-3 py-2 text-sm font-semibold rounded-xl transition-all"
-                          style={{
-                            backgroundColor: activeTab === "arisan" ? `${activeCommunity.primaryColor}10` : "transparent",
-                            color: activeTab === "arisan" ? activeCommunity.primaryColor : "#52525b",
-                            borderLeft: activeTab === "arisan" ? `3px solid ${activeCommunity.primaryColor}` : "none",
-                          }}
-                        >
-                          <Trophy className="h-4.5 w-4.5" />
-                          Arisan
-                        </button>
-                      )}
-
-                <button
-                  onClick={() => { setActiveTab("discussion"); setMobileMenuOpen(false); }}
-                  className="flex w-full items-center gap-3 px-3 py-2 text-sm font-semibold rounded-xl transition-all"
-                  style={{
-                    backgroundColor: activeTab === "discussion" ? `${activeCommunity.primaryColor}10` : "transparent",
-                    color: activeTab === "discussion" ? activeCommunity.primaryColor : "#52525b",
-                    borderLeft: activeTab === "discussion" ? `3px solid ${activeCommunity.primaryColor}` : "none",
-                  }}
-                >
-                  <MessageSquare className="h-4.5 w-4.5" />
-                  Forum Diskusi
-                </button>
-
-                      {hasEventPocket && (
-                        <button
-                          onClick={() => { setActiveTab("events"); setMobileMenuOpen(false); }}
-                          className="flex w-full items-center gap-3 px-3 py-2 text-sm font-semibold rounded-xl transition-all"
-                          style={{
-                            backgroundColor: activeTab === "events" ? `${activeCommunity.primaryColor}10` : "transparent",
-                            color: activeTab === "events" ? activeCommunity.primaryColor : "#52525b",
-                            borderLeft: activeTab === "events" ? `3px solid ${activeCommunity.primaryColor}` : "none",
-                          }}
-                        >
-                          <Calendar className="h-4.5 w-4.5" />
-                          Agenda & Kegiatan
-                        </button>
-                      )}
-
-                      <button
-                      onClick={() => { setActiveTab("members"); setMobileMenuOpen(false); }}
-                        className="flex w-full items-center gap-3 px-3 py-2 text-sm font-semibold rounded-xl transition-all"
-                        style={{
-                          backgroundColor: activeTab === "members" ? `${activeCommunity.primaryColor}10` : "transparent",
-                          color: activeTab === "members" ? activeCommunity.primaryColor : "#52525b",
-                          borderLeft: activeTab === "members" ? `3px solid ${activeCommunity.primaryColor}` : "none",
-                        }}
-                      >
-                        <Users className="h-4.5 w-4.5" />
-                        Anggota
-                      </button>
-                    </>
-                  );
-                })()}
-              </nav>
-            </div>
-
-            {/* Logout Bottom */}
-            <div className="pt-4 border-t border-zinc-100">
-              <Button
-                variant="ghost"
-                className="w-full justify-start text-zinc-500 hover:text-red-650 hover:bg-red-50 rounded-xl"
-                onClick={handleLogout}
+            return (
+              <aside
+                className={`fixed inset-y-0 left-0 z-50 w-64 p-5 flex flex-col justify-between transition-transform duration-350 md:sticky md:translate-x-0 md:h-screen ${mobileMenuOpen ? "translate-x-0" : "-translate-x-full"}`}
+                style={{
+                  backgroundColor: activeCommunity.primaryColor,
+                  color: sidebarContrastColor,
+                  borderRight: `1px solid ${isLightSidebar ? "rgba(9,9,11,0.08)" : "rgba(255,255,255,0.12)"}`
+                }}
               >
-                <LogOut className="mr-2 h-4 w-4" />
-                Keluar Aplikasi
-              </Button>
-            </div>
-          </aside>
+                <div className="space-y-6">
+                  {/* Close button for Mobile Sidebar */}
+                  <div className="flex items-center justify-between md:hidden pb-2 border-b" style={{ borderColor: isLightSidebar ? "rgba(9,9,11,0.08)" : "rgba(255,255,255,0.12)" }}>
+                    <span className="text-sm font-bold" style={{ color: isLightSidebar ? "#52525b" : "rgba(255,255,255,0.7)" }}>Navigasi Komunitas</span>
+                    <button onClick={() => setMobileMenuOpen(false)} style={{ color: sidebarContrastColor }}>
+                      <X className="h-5 w-5" />
+                    </button>
+                  </div>
+
+                  {/* Top Section: Community Logo & Info */}
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-3">
+                      {activeCommunity.logoName && !logoErrors[activeCommunity.id] ? (
+                        <div className="h-11 w-11 rounded-xl bg-zinc-50 border border-zinc-200/85 shadow-sm overflow-hidden shrink-0">
+                          <img
+                            src={getLogoUrl(activeCommunity.logoName) || ""}
+                            alt={activeCommunity.name}
+                            className="h-full w-full object-cover"
+                            onError={() => setLogoErrors((prev) => ({ ...prev, [activeCommunity.id]: true }))}
+                          />
+                        </div>
+                      ) : (
+                        <div
+                          className="h-11 w-11 rounded-xl flex items-center justify-center text-white font-black text-lg shadow-sm shrink-0"
+                          style={{ backgroundColor: activeCommunity.primaryColor }}
+                        >
+                          {activeCommunity.name.charAt(0)}
+                        </div>
+                      )}
+                      <div className="min-w-0">
+                        <h2 className="text-base font-bold truncate leading-snug" style={{ color: sidebarContrastColor }}>{activeCommunity.name}</h2>
+                        <span className="text-[10px] font-medium capitalize" style={{ color: isLightSidebar ? "#71717a" : "rgba(255,255,255,0.5)" }}>{activeCommunity.type}</span>
+                      </div>
+                    </div>
+
+                    {/* User mini info & role */}
+                    <div
+                      className="rounded-xl p-3 space-y-2 border font-sans"
+                      style={{
+                        backgroundColor: isLightSidebar ? "rgba(9,9,11,0.04)" : "rgba(255,255,255,0.08)",
+                        borderColor: isLightSidebar ? "rgba(9,9,11,0.08)" : "rgba(255,255,255,0.12)"
+                      }}
+                    >
+                      <div className="text-xs">
+                        <div className="font-semibold truncate" style={{ color: sidebarContrastColor }}>{profileName}</div>
+                        <div className="text-[10px]" style={{ color: isLightSidebar ? "#71717a" : "rgba(255,255,255,0.5)" }}>Anggota Aktif</div>
+                      </div>
+                      <span className={`inline-block rounded-full px-2.5 py-0.5 text-[9px] font-bold border text-zinc-900 ${
+                        myRole === "Admin" ? "bg-red-50 border-red-100" : "bg-emerald-50 border-emerald-100"
+                      }`}>
+                        {myRole === "Admin" ? "Admin" : "Member"}
+                      </span>
+                    </div>
+
+                    {/* Ganti Komunitas Button */}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setSelectedCommunityId(null);
+                        setMobileMenuOpen(false);
+                      }}
+                      className="w-full rounded-xl text-xs font-semibold h-9 justify-start border"
+                      style={{
+                        color: sidebarContrastColor,
+                        borderColor: isLightSidebar ? "rgba(9,9,11,0.12)" : "rgba(255,255,255,0.2)",
+                        backgroundColor: "transparent"
+                      }}
+                    >
+                      <ArrowLeft className="mr-1.5 h-3.5 w-3.5" />
+                      Ganti Komunitas
+                    </Button>
+                  </div>
+
+                  {/* Navigation Menu */}
+                  <nav className="space-y-1">
+                    {/* Derived: show Arisan only if an arisan pocket exists */}
+                    {(() => {
+                      const communityPockets = pockets[activeCommunity.id] || [];
+                      const hasArisanPocket = communityPockets.some((p) =>
+                        p.name.toLowerCase().includes("arisan")
+                      );
+                      const hasEventPocket = communityPockets.some((p) =>
+                        p.name.toLowerCase().includes("event") ||
+                        p.name.toLowerCase().includes("acara") ||
+                        p.name.toLowerCase().includes("fund")
+                      );
+                      return (
+                        <>
+                          <button
+                            onClick={() => { setActiveTab("dashboard"); setMobileMenuOpen(false); }}
+                            className="flex w-full items-center gap-3 px-3 py-2 text-sm font-semibold rounded-xl transition-all"
+                            style={navButtonStyle("dashboard")}
+                          >
+                            <Sparkles className="h-4.5 w-4.5" />
+                            Dashboard
+                          </button>
+
+                          <button
+                            onClick={() => { setActiveTab("wallet"); setMobileMenuOpen(false); }}
+                            className="flex w-full items-center gap-3 px-3 py-2 text-sm font-semibold rounded-xl transition-all"
+                            style={navButtonStyle("wallet")}
+                          >
+                            <Wallet className="h-4.5 w-4.5" />
+                            Dompet & Iuran
+                          </button>
+
+                          {hasArisanPocket && (
+                            <button
+                              onClick={() => { setActiveTab("arisan"); setMobileMenuOpen(false); }}
+                              className="flex w-full items-center gap-3 px-3 py-2 text-sm font-semibold rounded-xl transition-all"
+                              style={navButtonStyle("arisan")}
+                            >
+                              <Trophy className="h-4.5 w-4.5" />
+                              Arisan
+                            </button>
+                          )}
+
+                          <button
+                            onClick={() => { setActiveTab("discussion"); setMobileMenuOpen(false); }}
+                            className="flex w-full items-center gap-3 px-3 py-2 text-sm font-semibold rounded-xl transition-all"
+                            style={navButtonStyle("discussion")}
+                          >
+                            <MessageSquare className="h-4.5 w-4.5" />
+                            Forum Diskusi
+                          </button>
+
+                          {hasEventPocket && (
+                            <button
+                              onClick={() => { setActiveTab("events"); setMobileMenuOpen(false); }}
+                              className="flex w-full items-center gap-3 px-3 py-2 text-sm font-semibold rounded-xl transition-all"
+                              style={navButtonStyle("events")}
+                            >
+                              <Calendar className="h-4.5 w-4.5" />
+                              Agenda & Kegiatan
+                            </button>
+                          )}
+
+                          <button
+                            onClick={() => { setActiveTab("members"); setMobileMenuOpen(false); }}
+                            className="flex w-full items-center gap-3 px-3 py-2 text-sm font-semibold rounded-xl transition-all"
+                            style={navButtonStyle("members")}
+                          >
+                            <Users className="h-4.5 w-4.5" />
+                            Anggota
+                          </button>
+                        </>
+                      );
+                    })()}
+                  </nav>
+                </div>
+
+                {/* Logout Bottom */}
+                <div className="pt-4 border-t" style={{ borderColor: isLightSidebar ? "rgba(9,9,11,0.08)" : "rgba(255,255,255,0.12)" }}>
+                  <Button
+                    variant="ghost"
+                    className="w-full justify-start rounded-xl"
+                    style={{
+                      color: isLightSidebar ? "#52525b" : "rgba(255, 255, 255, 0.7)",
+                      backgroundColor: "transparent"
+                    }}
+                    onClick={handleLogout}
+                  >
+                    <LogOut className="mr-2 h-4 w-4" />
+                    Keluar Aplikasi
+                  </Button>
+                </div>
+              </aside>
+            );
+          })()}
 
           {/* Backdrop for Mobile */}
           {mobileMenuOpen && (
@@ -3024,8 +3107,11 @@ export default function DashboardPage() {
                     </div>
                     {myRole === "Admin" && (
                       <Button
-                        className="rounded-xl shadow-sm text-white hover:opacity-90 transition-opacity"
-                        style={{ backgroundColor: activeCommunity.primaryColor }}
+                        className="rounded-xl shadow-sm hover:opacity-90 transition-opacity"
+                        style={{
+                          backgroundColor: activeCommunity.primaryColor,
+                          color: getContrastText(activeCommunity.primaryColor),
+                        }}
                         onClick={() => setIsAddTxOpen(true)}
                       >
                         <Plus className="mr-1.5 h-4 w-4" />
@@ -3176,8 +3262,11 @@ export default function DashboardPage() {
                               </div>
                               <Button
                                 size="sm"
-                                className="rounded-xl text-xs font-bold text-white hover:opacity-90 shrink-0"
-                                style={{ backgroundColor: activeCommunity.primaryColor }}
+                                className="rounded-xl text-xs font-bold hover:opacity-90 shrink-0"
+                                style={{
+                                  backgroundColor: activeCommunity.primaryColor,
+                                  color: getContrastText(activeCommunity.primaryColor),
+                                }}
                                 onClick={() => {
                                   const overdueBill = myUnpaidDues.find(bill =>
                                     bill.due_date && new Date(bill.due_date).getTime() < new Date().setHours(0, 0, 0, 0)
@@ -3197,8 +3286,11 @@ export default function DashboardPage() {
                               </div>
                               <Button
                                 size="sm"
-                                className="rounded-xl text-xs font-bold text-white hover:opacity-90 shrink-0"
-                                style={{ backgroundColor: activeCommunity.primaryColor }}
+                                className="rounded-xl text-xs font-bold hover:opacity-90 shrink-0"
+                                style={{
+                                  backgroundColor: activeCommunity.primaryColor,
+                                  color: getContrastText(activeCommunity.primaryColor),
+                                }}
                                 onClick={() => {
                                   setSelectedBillToPay(myUnpaidDues[0]);
                                   setIsPaymentOpen(true);
@@ -4657,9 +4749,16 @@ export default function DashboardPage() {
                       </Button>
                     </div>
                     {newCommLogoName && (
-                      <span className="text-[10px] text-emerald-650 font-semibold truncate block mt-1">
-                        Selected: {newCommLogoName}
-                      </span>
+                      <div className="flex items-center gap-2 mt-2">
+                        {newCommLogoName.startsWith("data:") && (
+                          <div className="h-10 w-10 rounded-xl overflow-hidden border border-zinc-200 shadow-sm shrink-0">
+                            <img src={newCommLogoName} alt="Preview" className="h-full w-full object-cover" />
+                          </div>
+                        )}
+                        <span className="text-[10px] text-emerald-650 font-bold truncate block">
+                          {newCommLogoName.startsWith("data:") ? "Logo terpilih (Preview)" : `Selected: ${newCommLogoName}`}
+                        </span>
+                      </div>
                     )}
                   </div>
 
