@@ -37,6 +37,8 @@ import {
   Building,
   Upload,
   Info,
+  History,
+  Filter,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 
@@ -298,7 +300,8 @@ export default function DashboardPage() {
   const [selectedCommunityId, setSelectedCommunityId] = useState<string | null>(null);
 
   // Navigation tabs
-  const [activeTab, setActiveTab] = useState<"dashboard" | "wallet" | "arisan" | "discussion" | "events" | "members">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "wallet" | "arisan" | "discussion" | "events" | "members" | "ledger">("dashboard");
+  const [ledgerFilter, setLedgerFilter] = useState<"all" | "in" | "out">("all");
   const [landingTab, setLandingTab] = useState<"communities" | "profile">("communities");
 
   // Mock Database & Live Sync
@@ -3053,7 +3056,16 @@ export default function DashboardPage() {
                             style={navButtonStyle("members")}
                           >
                             <Users className="h-4.5 w-4.5" />
-                            Anggota
+                            Members
+                          </button>
+
+                          <button
+                            onClick={() => { setActiveTab("ledger"); setMobileMenuOpen(false); }}
+                            className="flex w-full items-center gap-3 px-3 py-2 text-sm font-semibold rounded-xl transition-all"
+                            style={navButtonStyle("ledger")}
+                          >
+                            <History className="h-4.5 w-4.5" />
+                            Transaction History
                           </button>
                         </>
                       );
@@ -3191,10 +3203,10 @@ export default function DashboardPage() {
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => setActiveTab("wallet")}
+                          onClick={() => setActiveTab("ledger")}
                           className="rounded-xl text-xs text-zinc-500"
                         >
-                          Lihat Mutasi
+                          View All
                         </Button>
                       </div>
 
@@ -4594,6 +4606,156 @@ export default function DashboardPage() {
                         </tbody>
                       </table>
                     </div>
+                  </Card>
+                </div>
+              )}
+
+              {/* --- VIEW: RIWAYAT TRANSAKSI (LEDGER) --- */}
+              {activeTab === "ledger" && (
+                <div className="space-y-8 animate-fade-in">
+                  {/* Header */}
+                  <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+                    <div>
+                      <h1 className="text-3xl font-extrabold tracking-tight text-zinc-900">Riwayat Transaksi</h1>
+                      <p className="mt-1.5 text-sm text-zinc-500">Catatan lengkap dan transparan seluruh arus kas di komunitas ini.</p>
+                    </div>
+                    {myRole === "Admin" && (
+                      <button
+                        onClick={() => setIsAddTxOpen(true)}
+                        className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold text-white hover:opacity-90 transition-opacity shadow-sm"
+                        style={{ backgroundColor: activeCommunity.primaryColor }}
+                      >
+                        <Plus className="h-4 w-4" />
+                        Catat Transaksi
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Ringkasan Statistik */}
+                  {(() => {
+                    const allTx = transactions[activeCommunity.id] || [];
+                    const totalIn = allTx.filter(t => t.type === "in").reduce((s, t) => s + t.amount, 0);
+                    const totalOut = allTx.filter(t => t.type === "out").reduce((s, t) => s + t.amount, 0);
+                    const net = totalIn - totalOut;
+                    return (
+                      <div className="grid gap-4 sm:grid-cols-3">
+                        <Card className="rounded-2xl border border-zinc-200/80 p-5 shadow-sm bg-white">
+                          <div className="flex items-center justify-between mb-3">
+                            <span className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Total Pemasukan</span>
+                            <div className="h-8 w-8 rounded-xl bg-emerald-50 border border-emerald-100 grid place-items-center">
+                              <ArrowDownRight className="h-4 w-4 text-emerald-600" />
+                            </div>
+                          </div>
+                          <div className="text-2xl font-black text-emerald-600">+ Rp {totalIn.toLocaleString("id-ID")}</div>
+                          <div className="text-[11px] text-zinc-400 mt-1">{allTx.filter(t => t.type === "in").length} transaksi</div>
+                        </Card>
+                        <Card className="rounded-2xl border border-zinc-200/80 p-5 shadow-sm bg-white">
+                          <div className="flex items-center justify-between mb-3">
+                            <span className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Total Pengeluaran</span>
+                            <div className="h-8 w-8 rounded-xl bg-red-50 border border-red-100 grid place-items-center">
+                              <ArrowUpRight className="h-4 w-4 text-red-500" />
+                            </div>
+                          </div>
+                          <div className="text-2xl font-black text-red-500">− Rp {totalOut.toLocaleString("id-ID")}</div>
+                          <div className="text-[11px] text-zinc-400 mt-1">{allTx.filter(t => t.type === "out").length} transaksi</div>
+                        </Card>
+                        <Card className="rounded-2xl border border-zinc-200/80 p-5 shadow-sm bg-white">
+                          <div className="flex items-center justify-between mb-3">
+                            <span className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Saldo Bersih</span>
+                            <div className={`h-8 w-8 rounded-xl grid place-items-center ${net >= 0 ? "bg-indigo-50 border border-indigo-100" : "bg-amber-50 border border-amber-100"}`}>
+                              <TrendingUp className={`h-4 w-4 ${net >= 0 ? "text-indigo-600" : "text-amber-500"}`} />
+                            </div>
+                          </div>
+                          <div className={`text-2xl font-black ${net >= 0 ? "text-indigo-600" : "text-amber-500"}`}>{net >= 0 ? "+" : "−"} Rp {Math.abs(net).toLocaleString("id-ID")}</div>
+                          <div className="text-[11px] text-zinc-400 mt-1">{allTx.length} total transaksi</div>
+                        </Card>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Bar Filter */}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <div className="flex items-center gap-1.5 text-xs text-zinc-400 mr-2">
+                      <Filter className="h-3.5 w-3.5" />
+                      <span className="font-semibold">Filter:</span>
+                    </div>
+                    {(["all", "in", "out"] as const).map((f) => (
+                      <button
+                        key={f}
+                        onClick={() => setLedgerFilter(f)}
+                        className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold border transition-all ${
+                          ledgerFilter === f
+                            ? "border-transparent text-white shadow-sm"
+                            : "border-zinc-200 text-zinc-500 bg-white hover:bg-zinc-50"
+                        }`}
+                        style={ledgerFilter === f ? { backgroundColor: activeCommunity.primaryColor } : {}}
+                      >
+                        {f === "all" ? "Semua Transaksi" : f === "in" ? "Pemasukan (+)" : "Pengeluaran (−)"}
+                      </button>
+                    ))}
+                    <span className="ml-auto text-[11px] text-zinc-400 font-medium">
+                      {(transactions[activeCommunity.id] || []).filter(t => ledgerFilter === "all" || t.type === ledgerFilter).length} data
+                    </span>
+                  </div>
+
+                  {/* Tabel Transaksi Lengkap */}
+                  <Card className="rounded-2xl border border-zinc-200/80 shadow-sm bg-white overflow-hidden">
+                    <div className="px-6 py-4 border-b border-zinc-100 flex items-center gap-2">
+                      <History className="h-4 w-4 text-zinc-400" />
+                      <h2 className="text-sm font-bold text-zinc-900">Buku Kas Terbuka (Transparan)</h2>
+                      <span className="ml-auto text-[11px] text-zinc-400">Diurutkan terbaru</span>
+                    </div>
+                    <div className="divide-y divide-zinc-100">
+                      {(transactions[activeCommunity.id] || []).filter(t => ledgerFilter === "all" || t.type === ledgerFilter).length === 0 ? (
+                        <div className="flex flex-col items-center justify-center py-16 gap-3">
+                          <div className="h-12 w-12 rounded-2xl bg-zinc-100 grid place-items-center">
+                            <History className="h-6 w-6 text-zinc-400" />
+                          </div>
+                          <p className="text-sm font-semibold text-zinc-400">Belum ada transaksi</p>
+                          <p className="text-xs text-zinc-300">Belum ada catatan arus kas di komunitas ini.</p>
+                        </div>
+                      ) : (
+                        (transactions[activeCommunity.id] || [])
+                          .filter(t => ledgerFilter === "all" || t.type === ledgerFilter)
+                          .map((t, idx) => (
+                            <div key={t.id} className={`flex items-center justify-between px-6 py-4 hover:bg-zinc-50/70 transition-colors ${idx % 2 === 0 ? "" : ""}`}>
+                              <div className="flex items-center gap-4">
+                                <div className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl border ${
+                                  t.type === "in"
+                                    ? "bg-emerald-50 text-emerald-600 border-emerald-100"
+                                    : "bg-red-50 text-red-500 border-red-100"
+                                }`}>
+                                  {t.type === "in" ? <ArrowDownRight className="h-5 w-5" /> : <ArrowUpRight className="h-5 w-5" />}
+                                </div>
+                                <div className="min-w-0">
+                                  <div className="text-sm font-semibold text-zinc-900 truncate">{t.name}</div>
+                                  <div className="text-xs text-zinc-400 mt-0.5">
+                                    Kantong: <span className="font-semibold text-zinc-600">{t.pocket}</span>
+                                    <span className="mx-1.5 text-zinc-300">·</span>
+                                    oleh <span className="font-medium text-zinc-600">{t.author}</span>
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="text-right shrink-0 ml-4">
+                                <div className={`text-sm font-bold ${
+                                  t.type === "in" ? "text-emerald-600" : "text-red-500"
+                                }`}>
+                                  {t.type === "in" ? "+" : "−"} Rp {t.amount.toLocaleString("id-ID")}
+                                </div>
+                                <span className="text-[11px] text-zinc-400 block mt-0.5">{t.date}</span>
+                              </div>
+                            </div>
+                          ))
+                      )}
+                    </div>
+                    {(transactions[activeCommunity.id] || []).length > 0 && (
+                      <div className="px-6 py-4 border-t border-zinc-100 bg-zinc-50/60">
+                        <div className="flex justify-between text-xs font-semibold text-zinc-500">
+                          <span>Menampilkan {(transactions[activeCommunity.id] || []).filter(t => ledgerFilter === "all" || t.type === ledgerFilter).length} dari {(transactions[activeCommunity.id] || []).length} data</span>
+                          <span className="text-zinc-400">Semua data dimuat — tanpa paginasi</span>
+                        </div>
+                      </div>
+                    )}
                   </Card>
                 </div>
               )}
