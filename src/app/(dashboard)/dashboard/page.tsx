@@ -633,6 +633,7 @@ export default function DashboardPage() {
               amount,
               status,
               due_date,
+              pocket_id,
               profile:profiles (
                 id,
                 full_name,
@@ -2033,86 +2034,86 @@ export default function DashboardPage() {
       setIsDrawingArisan(false);
 
       if (selectedCommunityId && currentUser && winnerId) {
-        // 1. Update the active round record in Supabase
-        const { error: updateRoundErr } = await supabase
-          .from("arisan_rounds")
-          .update({
-            winner_profile_id: winnerId,
-            status: "distributed",
-            drawn_at: new Date().toISOString()
-          })
-          .eq("id", activeRound.id);
-
-        if (updateRoundErr) {
-          console.error("Error updating arisan round in DB:", updateRoundErr);
-        }
-
-        // 2. Update arisan history state
-        setArisanHistory({
-          ...arisanHistory,
-          [selectedCommunityId]: [`${winnerName} (Putaran ${activeRound.round_number})`, ...(arisanHistory[selectedCommunityId] || [])],
-        });
-
-        // 3. Update pocket balance
-        const communityPockets = pockets[selectedCommunityId] || [];
-        const arisanPocket = communityPockets.find(p => p.name.toLowerCase().includes("arisan")) || communityPockets[0];
-
-        if (arisanPocket) {
-          const amount = activeRound.total_prize;
-          const newBal = Math.max(0, arisanPocket.balance - amount);
-
-          // Update pocket balance in Supabase
-          await supabase
-            .from("fund_pockets")
-            .update({ balance: newBal })
-            .eq("id", arisanPocket.id);
-
-          // Record arisan payout transaction in Supabase
-          const { data: newTxData } = await supabase
-            .from("transactions")
-            .insert({
+        try {
+          const res = await fetch("/api/arisan/draw", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              round_id: activeRound.id,
+              winner_id: winnerId,
               community_id: selectedCommunityId,
-              pocket_id: arisanPocket.id,
               profile_id: currentUser.id,
-              type: "expense",
-              amount: amount,
-              description: `Pemenang Kocokan: ${winnerName} (Putaran ${activeRound.round_number})`,
-              status: "success",
-            })
+            }),
+          });
+
+          if (!res.ok) {
+            const errData = await res.json();
+            throw new Error(errData.error || "Gagal mencatat pemenang arisan.");
+          }
+
+          // Update arisan history state
+          setArisanHistory({
+            ...arisanHistory,
+            [selectedCommunityId]: [`${winnerName} (Putaran ${activeRound.round_number})`, ...(arisanHistory[selectedCommunityId] || [])],
+          });
+
+          // Refresh arisan rounds from Supabase to update the UI
+          await fetchArisanRounds(selectedCommunityId);
+
+          // Reload fund pockets balances
+          const { data: pocketsList } = await supabase
+            .from("fund_pockets")
+            .select("*")
+            .eq("community_id", selectedCommunityId);
+          if (pocketsList) {
+            const mapped = pocketsList.map(p => ({
+              id: p.id,
+              name: p.name,
+              balance: Number(p.balance),
+              tone: "primary" as const
+            }));
+            setPockets({ ...pockets, [selectedCommunityId]: mapped });
+          }
+
+          // Reload transactions history
+          const { data: allTxs } = await supabase
+            .from("transactions")
             .select(`
               *,
               fund_pockets (name),
               profiles (full_name)
             `)
-            .single();
+            .eq("community_id", selectedCommunityId)
+            .order("created_at", { ascending: false });
 
-          const updatedPockets = communityPockets.map((p) => {
-            if (p.id === arisanPocket.id) {
-              return { ...p, balance: newBal };
-            }
-            return p;
-          });
-          setPockets({ ...pockets, [selectedCommunityId]: updatedPockets });
-
-          if (newTxData) {
-            const newTx: Transaction = {
-              id: newTxData.id,
-              name: newTxData.description,
-              pocket: newTxData.fund_pockets?.name || arisanPocket.name,
-              amount: Number(newTxData.amount),
-              type: "out",
-              date: "Hari ini",
-              author: "Sistem Arisan",
-            };
-            setTransactions({
-              ...transactions,
-              [selectedCommunityId]: [newTx, ...(transactions[selectedCommunityId] || [])],
-            });
+          if (allTxs) {
+            const txList = allTxs.map(t => ({
+              id: t.id,
+              name: t.description,
+              pocket: t.fund_pockets?.name || "Treasury",
+              amount: Number(t.amount),
+              type: (t.type === "income" ? "in" : "out") as "in" | "out",
+              date: new Date(t.created_at).toLocaleDateString("id-ID", {
+                day: "numeric",
+                month: "short",
+                year: "numeric"
+              }),
+              author: t.profiles?.full_name || "System"
+            }));
+            setTransactions({ ...transactions, [selectedCommunityId]: txList });
           }
-        }
 
-        // 4. Refresh arisan rounds from Supabase to update the UI
-        await fetchArisanRounds(selectedCommunityId);
+        } catch (err: any) {
+          console.error("Gagal memproses kocokan arisan:", err);
+          Swal.fire({
+            title: "Gagal",
+            text: err.message || "Terjadi kesalahan saat memproses kocokan.",
+            icon: "error",
+            confirmButtonColor: activeCommunity?.primaryColor || "#6366f1",
+          });
+        }
       }
     }, 2500);
   };
@@ -2453,8 +2454,8 @@ export default function DashboardPage() {
                 <button
                   onClick={() => { setLandingTab("communities"); setMobileMenuOpen(false); }}
                   className={`flex w-full items-center gap-3 px-3 py-2 text-sm font-semibold rounded-xl transition-all ${landingTab === "communities"
-                      ? "bg-indigo-50 text-indigo-700 border-l-2 border-indigo-600"
-                      : "text-zinc-600 hover:text-indigo-600 hover:bg-zinc-50"
+                    ? "bg-indigo-50 text-indigo-700 border-l-2 border-indigo-600"
+                    : "text-zinc-600 hover:text-indigo-600 hover:bg-zinc-50"
                     }`}
                 >
                   <Building className="h-4.5 w-4.5" />
@@ -2464,8 +2465,8 @@ export default function DashboardPage() {
                 <button
                   onClick={() => { setLandingTab("profile"); setMobileMenuOpen(false); }}
                   className={`flex w-full items-center gap-3 px-3 py-2 text-sm font-semibold rounded-xl transition-all ${landingTab === "profile"
-                      ? "bg-indigo-50 text-indigo-700 border-l-2 border-indigo-600"
-                      : "text-zinc-600 hover:text-indigo-600 hover:bg-zinc-50"
+                    ? "bg-indigo-50 text-indigo-700 border-l-2 border-indigo-600"
+                    : "text-zinc-600 hover:text-indigo-600 hover:bg-zinc-50"
                     }`}
                 >
                   <User className="h-4.5 w-4.5" />
@@ -3454,9 +3455,77 @@ export default function DashboardPage() {
 
                   {(() => {
                     const activeRound = arisanRounds.find(r => r.status === 'pending');
-
                     if (!activeRound) {
-                      // CASE 1: Belum Mulai Arisan / Putaran Selesai
+                      // Check if there is any completed round
+                      const completedRounds = arisanRounds.filter(r => r.status === 'distributed');
+                      const latestRound = completedRounds.length > 0
+                        ? completedRounds[completedRounds.length - 1]
+                        : null;
+
+                      if (latestRound) {
+                        return (
+                          <div className="max-w-2xl mx-auto space-y-8 mt-6 animate-fade-in">
+                            {/* Card Pemenang Putaran Terakhir */}
+                            <Card className="rounded-3xl border border-zinc-200/80 p-8 shadow-sm bg-white text-center space-y-6">
+                              <div className="w-24 h-24 bg-amber-50 border border-amber-100 rounded-full flex items-center justify-center mx-auto text-4xl shadow-xs animate-bounce">
+                                🏆
+                              </div>
+                              <div className="space-y-2">
+                                <span className="text-[10px] font-bold text-amber-600 bg-amber-50 border border-amber-100 px-3 py-1 rounded-full uppercase tracking-wider">
+                                  Putaran Ke-{latestRound.round_number} Selesai
+                                </span>
+                                <h2 className="text-2xl font-black text-zinc-900 tracking-tight mt-3">
+                                  Arisan Telah Sukses Dikocok!
+                                </h2>
+                                <p className="text-sm text-zinc-500 max-w-md mx-auto font-sans leading-relaxed">
+                                  Pemenang putaran ini adalah <span className="font-extrabold text-zinc-800">{latestRound.winner_profile?.full_name || "Warga Komunitas"}</span> dengan total hadiah pot sebesar <span className="font-bold text-emerald-600">Rp {Number(latestRound.total_prize).toLocaleString("id-ID")}</span> yang telah dicairkan.
+                                </p>
+                              </div>
+
+                              <div className="pt-2">
+                                {myRole === "Admin" ? (
+                                  <Button
+                                    onClick={() => {
+                                      setArisanInputAmount("50000"); // default
+                                      setIsMulaiArisanOpen(true);
+                                    }}
+                                    className="rounded-xl text-white font-bold text-sm px-8 h-12 shadow-sm hover:opacity-90 hover:scale-[1.01] transition-all"
+                                    style={{ backgroundColor: activeCommunity?.primaryColor || "#6366f1" }}
+                                  >
+                                    Mulai Putaran Ke-{latestRound.round_number + 1}
+                                  </Button>
+                                ) : (
+                                  <div className="bg-zinc-50 border border-zinc-150 rounded-2xl p-4 text-xs text-zinc-500 max-w-xs mx-auto font-sans">
+                                    🔒 Menunggu Admin/Bendahara untuk memulai putaran arisan berikutnya.
+                                  </div>
+                                )}
+                              </div>
+                            </Card>
+
+                            {/* Riwayat Putaran Lainnya */}
+                            {completedRounds.length > 1 && (
+                              <Card className="rounded-3xl border border-zinc-200/80 p-6 shadow-sm bg-white space-y-4">
+                                <h4 className="text-xs font-bold text-zinc-400 uppercase tracking-wider">Pemenang Putaran Sebelumnya</h4>
+                                <div className="grid gap-3 sm:grid-cols-2">
+                                  {completedRounds.slice(0, -1).reverse().map((r, idx) => (
+                                    <div key={idx} className="flex items-center justify-between text-xs text-zinc-700 bg-zinc-50 border border-zinc-150 rounded-xl p-3 font-semibold">
+                                      <div>
+                                        <p className="font-extrabold text-zinc-900">{r.winner_profile?.full_name || "Warga"}</p>
+                                        <p className="text-[10px] text-zinc-400 font-normal">Putaran Ke-{r.round_number}</p>
+                                      </div>
+                                      <span className="text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded border border-emerald-100">
+                                        Rp {Number(r.total_prize).toLocaleString("id-ID")}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </Card>
+                            )}
+                          </div>
+                        );
+                      }
+
+                      // Default Case 1 when no rounds have been played at all
                       return (
                         <div className="max-w-xl mx-auto text-center py-16 px-4 space-y-6 animate-fade-in bg-white border border-zinc-200/80 rounded-2xl shadow-xs mt-6">
                           <div className="w-20 h-20 bg-indigo-50 border border-indigo-100 rounded-full flex items-center justify-center mx-auto text-3xl shadow-xs animate-bounce">
@@ -3483,27 +3552,6 @@ export default function DashboardPage() {
                           ) : (
                             <div className="bg-zinc-50 border border-zinc-150 rounded-2xl p-4 text-xs text-zinc-500 max-w-xs mx-auto font-sans">
                               🔒 Menunggu Admin/Bendahara untuk memulai putaran arisan baru.
-                            </div>
-                          )}
-
-                          {/* Historical Rounds inside Case 1 if there are any */}
-                          {arisanRounds.filter(r => r.status === 'distributed').length > 0 && (
-                            <div className="border-t border-zinc-100 pt-6 mt-6 text-left max-w-sm mx-auto space-y-3">
-                              <h4 className="text-xs font-bold text-zinc-400 uppercase tracking-wider">Pemenang Putaran Sebelumnya</h4>
-                              <ul className="space-y-2">
-                                {arisanRounds
-                                  .filter(r => r.status === 'distributed')
-                                  .slice(-3) // last 3 rounds
-                                  .reverse()
-                                  .map((r, idx) => (
-                                    <li key={idx} className="flex items-center justify-between text-xs text-zinc-700 bg-emerald-50/30 border border-emerald-100/50 rounded-xl p-3 font-semibold">
-                                      <span>{r.winner_profile?.full_name || "Anggota"}</span>
-                                      <span className="text-[10px] text-emerald-650 font-bold bg-emerald-100/60 px-2 py-0.5 rounded">
-                                        Putaran {r.round_number}
-                                      </span>
-                                    </li>
-                                  ))}
-                              </ul>
                             </div>
                           )}
                         </div>
@@ -3553,30 +3601,44 @@ export default function DashboardPage() {
                             <Card className="rounded-2xl border border-zinc-200/80 p-6 shadow-sm bg-white space-y-6">
                               <h3 className="text-base font-bold text-zinc-900">Tombol "Kocok Arisan"</h3>
 
-                              {myRole === "Admin" ? (
-                                <div className="border border-zinc-250 bg-zinc-50/50 p-8 rounded-2xl text-center space-y-4">
-                                  <Trophy className="h-12 w-12 text-amber-500 mx-auto animate-bounce" />
-                                  <div>
-                                    <h4 className="font-bold text-zinc-900">Undian Pemenang Acak</h4>
-                                    <p className="text-xs text-zinc-505 mt-1 max-w-sm mx-auto font-sans">Klik tombol kocok di bawah untuk mengundi nama anggota yang belum menang putaran arisan kali ini.</p>
-                                  </div>
-                                  <Button
-                                    onClick={runArisanKocok}
-                                    disabled={isDrawingArisan}
-                                    className="rounded-xl text-white font-bold text-sm px-6 h-11 hover:opacity-90 transition-opacity"
-                                    style={{ backgroundColor: activeCommunity?.primaryColor || "#6366f1" }}
-                                  >
-                                    {isDrawingArisan ? (
-                                      <>
-                                        <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                                        Mengundi Nama...
-                                      </>
-                                    ) : (
-                                      "Mulai Kocok Arisan!"
+                              {myRole === "Admin" ? (() => {
+                                const currentRoundBills = arisanBills[selectedCommunityId || ""] || [];
+                                const hasUnpaidArisanBills = currentRoundBills.length === 0 || currentRoundBills.some(bill => bill.status !== "paid");
+                                const isKocokDisabled = isDrawingArisan || hasUnpaidArisanBills;
+                                return (
+                                  <div className="border border-zinc-250 bg-zinc-50/50 p-8 rounded-2xl text-center space-y-4">
+                                    <Trophy className="h-12 w-12 text-amber-500 mx-auto animate-bounce" />
+                                    <div>
+                                      <h4 className="font-bold text-zinc-900">Undian Pemenang Acak</h4>
+                                      <p className="text-xs text-zinc-505 mt-1 max-w-sm mx-auto font-sans">Klik tombol kocok di bawah untuk mengundi nama anggota yang belum menang putaran arisan kali ini.</p>
+                                    </div>
+                                    <Button
+                                      onClick={runArisanKocok}
+                                      disabled={isKocokDisabled}
+                                      className="rounded-xl text-white font-bold text-sm px-6 h-11 hover:opacity-90 transition-opacity"
+                                      style={{
+                                        backgroundColor: isKocokDisabled
+                                          ? "#d1d5db"
+                                          : (activeCommunity?.primaryColor || "#6366f1")
+                                      }}
+                                    >
+                                      {isDrawingArisan ? (
+                                        <>
+                                          <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                                          Mengundi Nama...
+                                        </>
+                                      ) : (
+                                        "Mulai Kocok Arisan!"
+                                      )}
+                                    </Button>
+                                    {hasUnpaidArisanBills && (
+                                      <p className="text-[11px] text-red-600 font-bold font-sans">
+                                        ⚠️ Kocokan dikunci: Masih ada peserta yang belum membayar iuran arisan.
+                                      </p>
                                     )}
-                                  </Button>
-                                </div>
-                              ) : (
+                                  </div>
+                                );
+                              })() : (
                                 <div className="border border-zinc-200 bg-zinc-50 p-6 rounded-2xl text-center space-y-2">
                                   <Clock className="h-10 w-10 text-violet-500 mx-auto" />
                                   <h4 className="font-bold text-zinc-900">Kocokan Menunggu Admin</h4>
@@ -3676,17 +3738,26 @@ export default function DashboardPage() {
                                       </div>
                                       <div className="flex items-center gap-2">
                                         <span className={`text-[9px] font-extrabold uppercase rounded px-1.5 py-0.5 border ${bill.status === "paid"
-                                            ? "bg-emerald-50 text-emerald-700 border-emerald-100"
-                                            : "bg-red-50 text-red-700 border-red-105"
+                                          ? "bg-emerald-50 text-emerald-700 border-emerald-100"
+                                          : "bg-red-50 text-red-700 border-red-105"
                                           }`}>
                                           {bill.status === "paid" ? "Lunas" : "Belum Bayar"}
                                         </span>
-                                        {myRole === "Admin" && (
+                                        {bill.profile?.id === currentUser?.id && bill.status === "unpaid" && (
                                           <button
-                                            onClick={() => handleToggleArisanBillStatus(bill.id, bill.status)}
-                                            className="text-[10px] font-bold text-indigo-650 hover:underline shrink-0"
+                                            onClick={() => {
+                                              setSelectedBillToPay({
+                                                id: bill.id,
+                                                title: bill.title,
+                                                amount: bill.amount,
+                                                status: bill.status,
+                                                pocket_id: bill.pocket_id || null
+                                              });
+                                              setIsPaymentOpen(true);
+                                            }}
+                                            className="text-[10px] font-bold text-emerald-600 hover:underline shrink-0"
                                           >
-                                            Ubah
+                                            Bayar
                                           </button>
                                         )}
                                       </div>
@@ -4447,8 +4518,8 @@ export default function DashboardPage() {
                     type="button"
                     onClick={() => setTxType("in")}
                     className={`h-10 text-xs font-bold rounded-xl border ${txType === "in"
-                        ? "bg-emerald-50 border-emerald-500 text-emerald-700"
-                        : "bg-white border-zinc-200 text-zinc-600"
+                      ? "bg-emerald-50 border-emerald-500 text-emerald-700"
+                      : "bg-white border-zinc-200 text-zinc-600"
                       }`}
                   >
                     Uang Masuk (+)
@@ -4457,8 +4528,8 @@ export default function DashboardPage() {
                     type="button"
                     onClick={() => setTxType("out")}
                     className={`h-10 text-xs font-bold rounded-xl border ${txType === "out"
-                        ? "bg-red-50 border-red-500 text-red-750"
-                        : "bg-white border-zinc-200 text-zinc-600"
+                      ? "bg-red-50 border-red-500 text-red-750"
+                      : "bg-white border-zinc-200 text-zinc-600"
                       }`}
                   >
                     Uang Keluar (-)
