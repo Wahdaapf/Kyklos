@@ -1653,44 +1653,40 @@ export default function DashboardPage() {
     setEvents({ ...events, [selectedCommunityId]: updatedEvents });
 
     try {
-      // 1. Save RSVP to DB
-      const { error: rsvpErr } = await supabase
-        .from("event_rsvps")
-        .upsert(
-          { event_id: eventId, profile_id: currentUser.id, status: dbStatus, updated_at: new Date().toISOString() },
-          { onConflict: "event_id,profile_id" }
-        );
-      if (rsvpErr) console.error("Error saving RSVP:", rsvpErr);
+      const res = await fetch("/api/event/rsvp", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          event_id: eventId,
+          profile_id: currentUser.id,
+          status: rsvp,
+          community_id: selectedCommunityId,
+        }),
+      });
 
-      // 2. If attending a paid event, ensure dues_bill exists for this member
-      if (rsvp === "yes" && ev.price && ev.price > 0) {
-        // Check if a bill already exists (admin may have pre-created it)
-        const { data: existingBill } = await supabase
-          .from("dues_bills")
-          .select("id")
-          .eq("community_id", selectedCommunityId)
-          .eq("profile_id", currentUser.id)
-          .ilike("title", `%${ev.title}%`)
-          .maybeSingle();
-
-        if (!existingBill) {
-          const eventDueDate = ev.event_date
-            ? new Date(ev.event_date).toISOString().split("T")[0]
-            : new Date().toISOString().split("T")[0];
-
-          await supabase.from("dues_bills").insert({
-            community_id: selectedCommunityId,
-            profile_id: currentUser.id,
-            title: `Tiket: ${ev.title}`,
-            amount: ev.price,
-            due_date: eventDueDate,
-            status: "unpaid",
-            pocket_id: ev.pocket_id || null,
-          });
-        }
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.error || "Gagal mencatat kehadiran.");
       }
-    } catch (err) {
+
+      // Reload events to sync database state
+      await fetchEvents(selectedCommunityId, currentUser.id);
+
+      // Reload unpaid dues to get the new ticket bill
+      await fetchMyUnpaidDues(selectedCommunityId, currentUser.id);
+
+    } catch (err: any) {
       console.error("Error in handleRSVP:", err);
+      Swal.fire({
+        title: "Gagal",
+        text: err.message || "Gagal mencatat kehadiran. Silakan coba lagi.",
+        icon: "error",
+        confirmButtonColor: activeCommunity?.primaryColor || "#6366f1",
+      });
+      // Revert local state to match DB
+      await fetchEvents(selectedCommunityId, currentUser.id);
     }
   };
 
@@ -1854,26 +1850,7 @@ export default function DashboardPage() {
         return;
       }
 
-      // 2. If paid event, create dues_bills for all members
-      if (price > 0) {
-        const activeMembers = members[selectedCommunityId] || [];
-        if (activeMembers.length > 0) {
-          const billsToInsert = activeMembers.map((member) => ({
-            community_id: selectedCommunityId,
-            profile_id: member.id,
-            title: `Tiket: ${newEventTitle}`,
-            amount: price,
-            due_date: new Date(newEventDate).toISOString().split("T")[0],
-            status: "unpaid",
-            pocket_id: newEventPocketId || null,
-          }));
-
-          const { error: billsErr } = await supabase.from("dues_bills").insert(billsToInsert);
-          if (billsErr) console.error("Error creating event bills:", billsErr);
-        }
-      }
-
-      // 3. Reload events and reset form
+      // 2. Reload events and reset form
       await fetchEvents(selectedCommunityId, currentUser.id);
 
       setNewEventTitle("");
@@ -1886,10 +1863,8 @@ export default function DashboardPage() {
       setIsCreateEventOpen(false);
 
       Swal.fire({
-        title: price > 0 ? "Acara & Tagihan Dibuat!" : "Acara Dibuat!",
-        text: price > 0
-          ? `"${newEventTitle}" berhasil ditambahkan. Tagihan tiket Rp ${price.toLocaleString("id-ID")} telah dikirim ke seluruh anggota.`
-          : `"${newEventTitle}" berhasil ditambahkan ke agenda komunitas.`,
+        title: "Acara Dibuat!",
+        text: `"${newEventTitle}" berhasil ditambahkan ke agenda komunitas.`,
         icon: "success",
         confirmButtonColor: activeCommunity?.primaryColor || "#6366f1",
       });
@@ -2345,36 +2320,7 @@ export default function DashboardPage() {
   };
 
   const getEvents = () => {
-    const list = events[selectedCommunityId || ""] || [];
-    if (list.length === 0) {
-      return [
-        {
-          id: "ev-default-1",
-          title: "Rapat Warga Bulanan & Sosialisasi Kas",
-          description: "Membahas evaluasi penggunaan dana kas RT dan penentuan panitia 17 Agustus.",
-          location: "Balai Warga RT 01",
-          when: "Sabtu, 28 Juni 2026 · 19:30 WIB",
-          status: "upcoming" as const,
-          userRSVP: "none" as const,
-          rsvpYesCount: 24,
-          rsvpNoCount: 3,
-          rsvpMaybeCount: 5,
-        },
-        {
-          id: "ev-default-2",
-          title: "Kerja Bakti Masal & Fogging Lingkungan",
-          description: "Pembersihan selokan air utama dan penyemprotan nyamuk DBD.",
-          location: "Area Fasum RT 01",
-          when: "Minggu, 6 Juli 2026 · 07:30 WIB",
-          status: "upcoming" as const,
-          userRSVP: "none" as const,
-          rsvpYesCount: 35,
-          rsvpNoCount: 1,
-          rsvpMaybeCount: 2,
-        },
-      ];
-    }
-    return list;
+    return events[selectedCommunityId || ""] || [];
   };
 
   // Calculations
@@ -3901,7 +3847,7 @@ export default function DashboardPage() {
                       <h1 className="text-3xl font-extrabold tracking-tight text-zinc-900">Agenda & Kegiatan</h1>
                       <p className="mt-1.5 text-sm text-zinc-500">Atur kalender acara bersama dan tracking RSVP kehadiran warga secara real-time.</p>
                     </div>
-                    {myRole === "Admin" && (
+                    {myRole === "Admin" && getEvents().length > 0 && (
                       <Button
                         onClick={() => {
                           // Auto-select the Event Fund pocket
@@ -3921,150 +3867,236 @@ export default function DashboardPage() {
                     )}
                   </div>
 
-                  <div className="grid gap-6 sm:grid-cols-2">
-                    {getEvents().length === 0 ? (
-                      <div className="sm:col-span-2 flex flex-col items-center justify-center py-16 text-center">
-                        <div className="w-16 h-16 rounded-2xl bg-zinc-100 flex items-center justify-center mb-4">
-                          <Calendar className="h-8 w-8 text-zinc-350" />
-                        </div>
-                        <h3 className="text-sm font-bold text-zinc-600 mb-1">Belum Ada Agenda</h3>
-                        <p className="text-xs text-zinc-400 max-w-xs">
-                          {myRole === "Admin"
-                            ? "Klik \"Buat Acara Baru\" untuk menambahkan kegiatan pertama komunitas ini."
-                            : "Belum ada agenda yang dijadwalkan oleh admin."}
+                  {getEvents().length === 0 ? (
+                    <div className="max-w-xl mx-auto text-center py-16 px-4 space-y-6 animate-fade-in bg-white border border-zinc-200/80 rounded-2xl shadow-xs mt-6">
+                      <div className="w-20 h-20 bg-indigo-55 border border-indigo-100 rounded-full flex items-center justify-center mx-auto text-3xl shadow-xs animate-bounce">
+                        📅
+                      </div>
+                      <div className="space-y-2">
+                        <h2 className="text-2xl font-extrabold text-zinc-900 tracking-tight">Belum Ada Agenda</h2>
+                        <p className="text-sm text-zinc-500 max-w-sm mx-auto font-sans leading-relaxed">
+                          Jadwalkan kegiatan warga seperti rapat bulanan, kerja bakti, atau kegiatan bersama di sini untuk mempermudah RSVP kehadiran.
                         </p>
                       </div>
-                    ) : (
-                      getEvents().map((ev) => (
-                        <Card key={ev.id} className="rounded-2xl border border-zinc-200/85 bg-white p-6 shadow-sm flex flex-col justify-between min-h-[220px] space-y-4">
-                          <div className="space-y-3">
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                <span
-                                  className="text-[10px] font-bold uppercase rounded-full px-2.5 py-0.5 border"
-                                  style={{
-                                    backgroundColor: ev.status === "done" ? "#ecfdf5" : `${activeCommunity.primaryColor}10`,
-                                    color: ev.status === "done" ? "#047857" : activeCommunity.primaryColor,
-                                    borderColor: ev.status === "done" ? "#a7f3d0" : `${activeCommunity.primaryColor}30`,
-                                  }}
-                                >
-                                  {ev.status === "done" ? "Selesai" : "Mendatang"}
-                                </span>
-                                {ev.price && ev.price > 0 ? (
-                                  <span className="text-[10px] font-bold uppercase rounded-full px-2.5 py-0.5 border border-amber-200 bg-amber-50 text-amber-700">
-                                    💰 Rp {ev.price.toLocaleString("id-ID")}
-                                  </span>
-                                ) : (
-                                  <span className="text-[10px] font-bold uppercase rounded-full px-2.5 py-0.5 border border-emerald-200 bg-emerald-50 text-emerald-700">
-                                    ✓ Gratis
-                                  </span>
-                                )}
-                              </div>
-                              <Calendar className="h-4 w-4 text-zinc-400 shrink-0 mt-0.5" />
-                            </div>
-                            <div>
-                              <h3 className="text-base font-bold text-zinc-900">{ev.title}</h3>
-                              {ev.description && <p className="text-xs text-zinc-500 mt-1 leading-relaxed">{ev.description}</p>}
-                              <div className="text-[11px] text-zinc-500 mt-2 space-y-1 bg-zinc-50 p-2.5 border border-zinc-150 rounded-xl font-sans">
-                                <div>📍 <span className="font-semibold text-zinc-700">Lokasi:</span> {ev.location || "Balai Warga"}</div>
-                                <div>📅 <span className="font-semibold text-zinc-700">Waktu:</span> {ev.when}</div>
-                              </div>
-                            </div>
-                          </div>
 
-                          {/* Sintesis Data RSVP */}
-                          <div className="bg-zinc-50/50 p-3 rounded-xl border border-zinc-100 flex items-center justify-around gap-2 text-center text-[10px]">
-                            <div>
-                              <span className="font-extrabold text-emerald-600 block text-xs">{ev.rsvpYesCount}</span>
-                              <span className="text-zinc-400 font-semibold uppercase">Hadir</span>
-                            </div>
-                            <div className="h-6 w-px bg-zinc-200" />
-                            <div>
-                              <span className="font-extrabold text-red-500 block text-xs">{ev.rsvpNoCount}</span>
-                              <span className="text-zinc-400 font-semibold uppercase">Tidak Hadir</span>
-                            </div>
-                          </div>
+                      {myRole === "Admin" ? (
+                        <Button
+                          onClick={() => {
+                            const communityPockets = pockets[selectedCommunityId || ""] || [];
+                            const eventPocket = communityPockets.find((p) =>
+                              p.name.toLowerCase().includes("event") || p.name.toLowerCase().includes("acara")
+                            );
+                            setNewEventPocketId(eventPocket?.id || "");
+                            setIsCreateEventOpen(true);
+                          }}
+                          className="rounded-xl text-white font-bold text-sm px-8 h-12 shadow-sm hover:opacity-90 hover:scale-[1.01] transition-all"
+                          style={{ backgroundColor: activeCommunity?.primaryColor || "#6366f1" }}
+                        >
+                          <Plus className="mr-2 h-4 w-4 inline" />
+                          Buat Acara Baru
+                        </Button>
+                      ) : (
+                        <div className="bg-zinc-50 border border-zinc-150 rounded-2xl p-4 text-xs text-zinc-500 max-w-xs mx-auto font-sans">
+                          🔒 Menunggu Admin/Bendahara untuk menjadwalkan agenda baru.
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="bg-white rounded-2xl border border-zinc-200/80 shadow-sm overflow-hidden">
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b border-zinc-100 bg-zinc-50/70">
+                              <th className="text-left text-[11px] font-bold text-zinc-500 uppercase tracking-wide px-5 py-3">Acara</th>
+                              <th className="text-left text-[11px] font-bold text-zinc-500 uppercase tracking-wide px-4 py-3 hidden sm:table-cell">Waktu</th>
+                              <th className="text-left text-[11px] font-bold text-zinc-500 uppercase tracking-wide px-4 py-3 hidden md:table-cell">Lokasi</th>
+                              <th className="text-center text-[11px] font-bold text-zinc-500 uppercase tracking-wide px-4 py-3">Hadir</th>
+                              <th className="text-center text-[11px] font-bold text-zinc-500 uppercase tracking-wide px-4 py-3">Tdk Hadir</th>
+                              <th className="text-center text-[11px] font-bold text-zinc-500 uppercase tracking-wide px-4 py-3">Status Kamu</th>
+                              <th className="text-center text-[11px] font-bold text-zinc-500 uppercase tracking-wide px-4 py-3">Aksi</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-zinc-100">
+                            {getEvents().map((ev) => (
+                              <tr key={ev.id} className="hover:bg-zinc-50/50 transition-colors">
+                                {/* Acara */}
+                                <td className="px-5 py-4">
+                                  <div className="space-y-1">
+                                    <div className="font-bold text-zinc-900 text-sm">{ev.title}</div>
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      <span
+                                        className="text-[10px] font-bold uppercase rounded-full px-2 py-0.5 border"
+                                        style={{
+                                          backgroundColor: ev.status === "done" ? "#ecfdf5" : `${activeCommunity.primaryColor}10`,
+                                          color: ev.status === "done" ? "#047857" : activeCommunity.primaryColor,
+                                          borderColor: ev.status === "done" ? "#a7f3d0" : `${activeCommunity.primaryColor}30`,
+                                        }}
+                                      >
+                                        {ev.status === "done" ? "Selesai" : "Mendatang"}
+                                      </span>
+                                      {ev.price && ev.price > 0 ? (
+                                        <span className="text-[10px] font-bold uppercase rounded-full px-2 py-0.5 border border-amber-200 bg-amber-50 text-amber-700">
+                                          💰 Rp {ev.price.toLocaleString("id-ID")}
+                                        </span>
+                                      ) : (
+                                        <span className="text-[10px] font-bold uppercase rounded-full px-2 py-0.5 border border-emerald-200 bg-emerald-50 text-emerald-700">
+                                          ✓ Gratis
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                </td>
 
-                          {/* RSVP Actions + Bayar */}
-                          <div className="pt-3 border-t border-zinc-100 space-y-2.5">
-                            {ev.status === "done" ? (
-                              <span className="text-[10px] text-zinc-400 font-semibold">Telah terlaksana</span>
-                            ) : ev.userRSVP !== "none" ? (
-                              /* Already voted — show locked status */
-                              <div className="space-y-2">
-                                <div className="flex items-center gap-2">
-                                  <span
-                                    className="text-xs font-bold px-3 py-1.5 rounded-xl border"
-                                    style={{
-                                      backgroundColor: ev.userRSVP === "yes" ? `${activeCommunity.primaryColor}15` : "#fee2e2",
-                                      color: ev.userRSVP === "yes" ? activeCommunity.primaryColor : "#ef4444",
-                                      borderColor: ev.userRSVP === "yes" ? `${activeCommunity.primaryColor}40` : "#fca5a5",
-                                    }}
-                                  >
-                                    {ev.userRSVP === "yes" ? "✓ Kamu Hadir" : "✗ Kamu Tidak Hadir"}
-                                  </span>
-                                  <span className="text-[10px] text-zinc-400">🔒 Terkunci</span>
-                                </div>
-                                {/* Bayar button — only when attending a paid event */}
-                                {ev.userRSVP === "yes" && ev.price && ev.price > 0 && (
-                                  <button
-                                    onClick={async () => {
-                                      const result = await Swal.fire({
-                                        title: "Pembayaran Tiket",
-                                        html: `Konfirmasi pembayaran tiket untuk <strong>${ev.title}</strong><br/><br/><span style="font-size:22px;font-weight:900;color:#16a34a">Rp ${ev.price!.toLocaleString("id-ID")}</span>`,
-                                        icon: "info",
-                                        showCancelButton: true,
-                                        confirmButtonColor: activeCommunity.primaryColor,
-                                        cancelButtonColor: "#71717a",
-                                        confirmButtonText: "💳 Bayar Sekarang",
-                                        cancelButtonText: "Nanti",
-                                      });
-                                      if (result.isConfirmed) {
-                                        Swal.fire({ title: "Pembayaran Berhasil!", text: `Tiket ${ev.title} telah terbayar.`, icon: "success", confirmButtonColor: activeCommunity.primaryColor });
-                                      }
-                                    }}
-                                    className="w-full py-2 rounded-xl text-xs font-bold text-white transition-opacity hover:opacity-90"
-                                    style={{ backgroundColor: activeCommunity.primaryColor }}
-                                  >
-                                    💳 Bayar Tiket — Rp {ev.price.toLocaleString("id-ID")}
-                                  </button>
-                                )}
-                              </div>
-                            ) : (
-                              /* Not yet voted */
-                              <>
-                                <span className="text-zinc-600 font-semibold text-[11px] block">Konfirmasi Kehadiran:</span>
-                                <div className="flex gap-1.5">
-                                  <button
-                                    onClick={() => handleRSVP(ev.id, "yes")}
-                                    className="flex-1 py-2 rounded-xl text-xs font-bold border transition-all shadow-xs"
-                                    style={{
-                                      backgroundColor: "#ffffff",
-                                      color: "#52525b",
-                                      borderColor: "#e4e4e7",
-                                    }}
-                                  >
-                                    ✓ Hadir
-                                  </button>
-                                  <button
-                                    onClick={() => handleRSVP(ev.id, "no")}
-                                    className="flex-1 py-2 rounded-xl text-xs font-bold border transition-all shadow-xs"
-                                    style={{
-                                      backgroundColor: "#ffffff",
-                                      color: "#52525b",
-                                      borderColor: "#e4e4e7",
-                                    }}
-                                  >
-                                    ✗ Tidak Hadir
-                                  </button>
-                                </div>
-                              </>
-                            )}
-                          </div>
-                        </Card>
-                      ))
-                    )}
-                  </div>
+                                {/* Waktu */}
+                                <td className="px-4 py-4 hidden sm:table-cell">
+                                  <span className="text-xs text-zinc-500 font-sans">{ev.when}</span>
+                                </td>
+
+                                {/* Lokasi */}
+                                <td className="px-4 py-4 hidden md:table-cell">
+                                  <span className="text-xs text-zinc-500 font-sans">{ev.location || "Balai Warga"}</span>
+                                </td>
+
+                                {/* Hadir count */}
+                                <td className="px-4 py-4 text-center">
+                                  <span className="font-extrabold text-emerald-600 text-sm">{ev.rsvpYesCount}</span>
+                                </td>
+
+                                {/* Tidak Hadir count */}
+                                <td className="px-4 py-4 text-center">
+                                  <span className="font-extrabold text-red-500 text-sm">{ev.rsvpNoCount}</span>
+                                </td>
+
+                                {/* Status Kamu */}
+                                <td className="px-4 py-4 text-center">
+                                  {ev.status === "done" ? (
+                                    <span className="text-[10px] text-zinc-400 font-semibold">Selesai</span>
+                                  ) : ev.userRSVP !== "none" ? (
+                                    <span
+                                      className="text-[10px] font-bold px-2.5 py-1 rounded-full border"
+                                      style={{
+                                        backgroundColor: ev.userRSVP === "yes" ? `${activeCommunity.primaryColor}15` : "#fee2e2",
+                                        color: ev.userRSVP === "yes" ? activeCommunity.primaryColor : "#ef4444",
+                                        borderColor: ev.userRSVP === "yes" ? `${activeCommunity.primaryColor}40` : "#fca5a5",
+                                      }}
+                                    >
+                                      {ev.userRSVP === "yes" ? "✓ Hadir" : "✗ Tidak Hadir"}
+                                    </span>
+                                  ) : (
+                                    <span className="text-[10px] text-zinc-400 font-semibold">Belum Pilih</span>
+                                  )}
+                                </td>
+
+                                {/* Aksi */}
+                                <td className="px-4 py-4">
+                                  <div className="flex items-center justify-center gap-2">
+                                    {ev.status === "done" ? (
+                                      <span className="text-[10px] text-zinc-300 font-semibold">—</span>
+                                    ) : ev.userRSVP !== "none" ? (
+                                      ev.userRSVP === "yes" && ev.price && ev.price > 0 ? (
+                                        <button
+                                          onClick={async () => {
+                                            let ticketBill = myUnpaidDues.find(b => b.title === `Tiket: ${ev.title}` || b.title.includes(ev.title));
+
+                                            if (!ticketBill) {
+                                              const { data } = await supabase
+                                                .from("dues_bills")
+                                                .select("*")
+                                                .eq("community_id", selectedCommunityId)
+                                                .eq("profile_id", currentUser.id)
+                                                .eq("status", "unpaid")
+                                                .ilike("title", `%${ev.title}%`)
+                                                .maybeSingle();
+
+                                              if (data) {
+                                                ticketBill = {
+                                                  id: data.id,
+                                                  title: data.title,
+                                                  amount: Number(data.amount),
+                                                  status: data.status,
+                                                  due_date: data.due_date,
+                                                  pocket_id: data.pocket_id
+                                                };
+                                              }
+                                            }
+
+                                            if (ticketBill) {
+                                              setSelectedBillToPay(ticketBill);
+                                              setIsPaymentOpen(true);
+                                            } else {
+                                              const eventDueDate = ev.event_date
+                                                ? new Date(ev.event_date).toISOString().split("T")[0]
+                                                : new Date().toISOString().split("T")[0];
+
+                                              const { data: newBill } = await supabase
+                                                .from("dues_bills")
+                                                .insert({
+                                                  community_id: selectedCommunityId,
+                                                  profile_id: currentUser.id,
+                                                  title: `Tiket: ${ev.title}`,
+                                                  amount: ev.price,
+                                                  due_date: eventDueDate,
+                                                  status: "unpaid",
+                                                  pocket_id: ev.pocket_id || null,
+                                                })
+                                                .select()
+                                                .single();
+
+                                              if (newBill) {
+                                                const mappedBill = {
+                                                  id: newBill.id,
+                                                  title: newBill.title,
+                                                  amount: Number(newBill.amount),
+                                                  status: newBill.status,
+                                                  due_date: newBill.due_date,
+                                                  pocket_id: newBill.pocket_id
+                                                };
+                                                await fetchMyUnpaidDues(selectedCommunityId, currentUser.id);
+                                                setSelectedBillToPay(mappedBill);
+                                                setIsPaymentOpen(true);
+                                              } else {
+                                                Swal.fire({
+                                                  title: "Error",
+                                                  text: "Gagal memproses pembayaran tiket. Silakan coba kembali.",
+                                                  icon: "error",
+                                                  confirmButtonColor: activeCommunity?.primaryColor || "#6366f1",
+                                                });
+                                              }
+                                            }
+                                          }}
+                                          className="px-3 py-1.5 rounded-lg text-[11px] font-bold text-white transition-opacity hover:opacity-90 whitespace-nowrap"
+                                          style={{ backgroundColor: activeCommunity.primaryColor }}
+                                        >
+                                          💳 Bayar
+                                        </button>
+                                      ) : (
+                                        <span className="text-[10px] text-zinc-300 font-semibold">🔒 Terkunci</span>
+                                      )
+                                    ) : (
+                                      <div className="flex gap-1.5">
+                                        <button
+                                          onClick={() => handleRSVP(ev.id, "yes")}
+                                          className="px-3 py-1.5 rounded-lg text-[11px] font-bold border border-zinc-200 bg-white text-zinc-700 hover:bg-emerald-50 hover:border-emerald-300 hover:text-emerald-700 transition-all"
+                                        >
+                                          ✓ Hadir
+                                        </button>
+                                        <button
+                                          onClick={() => handleRSVP(ev.id, "no")}
+                                          className="px-3 py-1.5 rounded-lg text-[11px] font-bold border border-zinc-200 bg-white text-zinc-700 hover:bg-red-50 hover:border-red-300 hover:text-red-600 transition-all"
+                                        >
+                                          ✗ Tidak
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
