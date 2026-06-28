@@ -103,12 +103,23 @@ interface Event {
   rsvpMaybeCount: number;
 }
 
-interface Discussion {
+interface ForumComment {
   id: string;
-  title: string;
+  profile_id: string;
   author: string;
-  comments: { author: string; content: string; date: string }[];
-  hot: boolean;
+  content: string;
+  created_at: string;
+}
+
+interface ForumThread {
+  id: string;
+  community_id: string;
+  profile_id: string;
+  title: string;
+  content: string;
+  author: string;
+  created_at: string;
+  comments: ForumComment[];
 }
 
 interface Member {
@@ -254,47 +265,7 @@ const DEFAULT_EVENTS: Record<string, Event[]> = {
   ],
 };
 
-const DEFAULT_DISCUSSIONS: Record<string, Discussion[]> = {
-  "rt-01-makmur": [
-    {
-      id: "d1",
-      title: "Rencana perbaikan pos ronda depan",
-      author: "Pak Budi",
-      hot: true,
-      comments: [
-        { author: "Sari", content: "Setuju sekali, lampunya sering mati kalau malam.", date: "2 jam lalu" },
-        { author: "Adit", content: "Perlu sumbangan semen atau langsung beli pos jadi saja?", date: "1 jam lalu" },
-      ],
-    },
-    {
-      id: "d2",
-      title: "Pengadaan tong sampah organik/non-organik",
-      author: "Bu Desi",
-      hot: false,
-      comments: [],
-    },
-  ],
-  "arisan-melati": [
-    {
-      id: "d3",
-      title: "Rekomendasi tempat liburan akhir tahun arisan",
-      author: "Bu Tina",
-      hot: true,
-      comments: [
-        { author: "Sari", content: "Bagaimana kalau kita ke Puncak saja yang dekat?", date: "1 hari lalu" },
-      ],
-    },
-  ],
-  "alumni-sma1": [
-    {
-      id: "d4",
-      title: "Pemilihan ketua panitia reuni akbar 2026",
-      author: "Andi",
-      hot: true,
-      comments: [],
-    },
-  ],
-};
+const DEFAULT_DISCUSSIONS: Record<string, ForumThread[]> = {};
 
 const DEFAULT_MEMBERS: Record<string, Member[]> = {
   "rt-01-makmur": [
@@ -334,7 +305,7 @@ export default function DashboardPage() {
   const [pockets, setPockets] = useState<Record<string, Pocket[]>>(DEFAULT_POCKETS);
   const [transactions, setTransactions] = useState<Record<string, Transaction[]>>(DEFAULT_TRANSACTIONS);
   const [events, setEvents] = useState<Record<string, Event[]>>(DEFAULT_EVENTS);
-  const [discussions, setDiscussions] = useState<Record<string, Discussion[]>>(DEFAULT_DISCUSSIONS);
+  const [discussions, setDiscussions] = useState<Record<string, ForumThread[]>>(DEFAULT_DISCUSSIONS);
   const [members, setMembers] = useState<Record<string, Member[]>>(DEFAULT_MEMBERS);
 
   // User details state (for general profile edit)
@@ -367,6 +338,7 @@ export default function DashboardPage() {
   const [isAddTxOpen, setIsAddTxOpen] = useState(false);
   const [isPaymentOpen, setIsPaymentOpen] = useState(false);
   const [isCreateEventOpen, setIsCreateEventOpen] = useState(false);
+  const [isCreateThreadOpen, setIsCreateThreadOpen] = useState(false);
 
   // 1. Identitas Dasar Komunitas
   const [newCommName, setNewCommName] = useState("");
@@ -405,8 +377,13 @@ export default function DashboardPage() {
   const [isCreatingEvent, setIsCreatingEvent] = useState(false);
 
   const [newThreadTitle, setNewThreadTitle] = useState("");
+  const [newThreadContent, setNewThreadContent] = useState("");
   const [activeDiscussionId, setActiveDiscussionId] = useState<string | null>(null);
+  const [activeDiscussionComments, setActiveDiscussionComments] = useState<ForumComment[]>([]);
   const [newCommentContent, setNewCommentContent] = useState("");
+  const [isLoadingDiscussions, setIsLoadingDiscussions] = useState(false);
+  const [isSubmittingThread, setIsSubmittingThread] = useState(false);
+  const [isSubmittingComment, setIsSubmittingComment] = useState(false);
 
   // Wallet Sub-menus
   const [walletTab, setWalletTab] = useState<"pockets" | "iuran" | "my_iuran">("pockets");
@@ -560,7 +537,7 @@ export default function DashboardPage() {
           setMembers(memberMap);
 
           // 6. Fetch all transactions (Buku Kas Terbuka)
-          const { data: allTxs } = await supabase
+          const { data: allTxs, error: txError } = await supabase
             .from("transactions")
             .select(`
               *,
@@ -569,6 +546,9 @@ export default function DashboardPage() {
             `)
             .order("created_at", { ascending: false });
 
+          console.log("[DEBUG] Raw allTxs from Supabase:", allTxs);
+          console.log("[DEBUG] txError:", txError);
+
           const txMap: Record<string, Transaction[]> = { ...DEFAULT_TRANSACTIONS };
           if (allTxs && allTxs.length > 0) {
             allTxs.forEach((t: any) => {
@@ -576,6 +556,7 @@ export default function DashboardPage() {
 
               // Prevent duplicates with default data
               const exists = txMap[t.community_id].some((ex) => ex.id === t.id);
+              console.log(`[DEBUG] tx id=${t.id} community_id=${t.community_id} exists=${exists}`);
               if (!exists) {
                 txMap[t.community_id].push({
                   id: t.id,
@@ -593,6 +574,8 @@ export default function DashboardPage() {
               }
             });
           }
+          console.log("[DEBUG] Final txMap keys:", Object.keys(txMap));
+          console.log("[DEBUG] Final txMap:", txMap);
           setTransactions(txMap);
         }
       } catch (err) {
@@ -968,14 +951,77 @@ export default function DashboardPage() {
   };
 
 
+  const fetchDiscussions = async (communityId: string) => {
+    if (!communityId) return;
+    setIsLoadingDiscussions(true);
+    try {
+      const { data, error } = await supabase
+        .from("discussion_threads")
+        .select(`
+          *,
+          profiles (full_name)
+        `)
+        .eq("community_id", communityId)
+        .order("created_at", { ascending: false });
+
+      if (error) {
+        console.error("Error fetching discussions:", error);
+        return;
+      }
+
+      const mapped: ForumThread[] = (data || []).map((t: any) => ({
+        id: t.id,
+        community_id: t.community_id,
+        profile_id: t.profile_id,
+        title: t.title,
+        content: t.content,
+        author: t.profiles?.full_name || "Anggota",
+        created_at: t.created_at,
+        comments: [],
+      }));
+
+      setDiscussions(prev => ({ ...prev, [communityId]: mapped }));
+    } finally {
+      setIsLoadingDiscussions(false);
+    }
+  };
+
+  const fetchComments = async (threadId: string) => {
+    const { data, error } = await supabase
+      .from("discussion_comments")
+      .select(`
+        *,
+        profiles (full_name)
+      `)
+      .eq("thread_id", threadId)
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      console.error("Error fetching comments:", error);
+      return;
+    }
+
+    const mapped: ForumComment[] = (data || []).map((c: any) => ({
+      id: c.id,
+      profile_id: c.profile_id,
+      author: c.profiles?.full_name || "Anggota",
+      content: c.content,
+      created_at: c.created_at,
+    }));
+
+    setActiveDiscussionComments(mapped);
+  };
+
   // Update active community details when user switches
   useEffect(() => {
     if (selectedCommunityId) {
       setActiveTab("dashboard");
       setWalletTab("pockets");
       setActiveDiscussionId(null);
+      setActiveDiscussionComments([]);
       fetchArisanRounds(selectedCommunityId);
       fetchEvents(selectedCommunityId, currentUser?.id);
+      fetchDiscussions(selectedCommunityId);
       if (currentUser?.id) {
         fetchMyUnpaidDues(selectedCommunityId, currentUser.id);
         fetchLastDuesBill(selectedCommunityId, currentUser.id);
@@ -1891,54 +1937,79 @@ export default function DashboardPage() {
     }
   };
 
-  const handleCreateThread = (e: React.FormEvent) => {
+  const handleCreateThread = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedCommunityId || !newThreadTitle.trim()) return;
+    if (!selectedCommunityId || !currentUser || !newThreadTitle.trim() || !newThreadContent.trim()) return;
 
-    const newDisc: Discussion = {
-      id: `disc-${Date.now()}`,
-      title: newThreadTitle,
-      author: profileName,
-      comments: [],
-      hot: false,
-    };
+    setIsSubmittingThread(true);
+    try {
+      const { data, error } = await supabase
+        .from("discussion_threads")
+        .insert({
+          community_id: selectedCommunityId,
+          profile_id: currentUser.id,
+          title: newThreadTitle.trim(),
+          content: newThreadContent.trim(),
+        })
+        .select()
+        .single();
 
-    setDiscussions({
-      ...discussions,
-      [selectedCommunityId]: [newDisc, ...getDiscussions()],
-    });
+      if (error) {
+        console.error("Error creating thread:", error);
+        return;
+      }
 
-    setNewThreadTitle("");
-    setActiveDiscussionId(newDisc.id);
+      setNewThreadTitle("");
+      setNewThreadContent("");
+      setIsCreateThreadOpen(false);
+      await fetchDiscussions(selectedCommunityId);
+
+      // Auto-select the newly created thread
+      if (data) {
+        setActiveDiscussionId(data.id);
+        fetchComments(data.id);
+      }
+    } finally {
+      setIsSubmittingThread(false);
+    }
   };
 
-  const handleAddComment = (e: React.FormEvent) => {
+  const handleAddComment = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedCommunityId || !activeDiscussionId || !newCommentContent.trim()) return;
+    if (!selectedCommunityId || !currentUser || !activeDiscussionId || !newCommentContent.trim()) return;
 
-    const updatedDiscussions = getDiscussions().map((d) => {
-      if (d.id === activeDiscussionId) {
-        return {
-          ...d,
-          comments: [
-            ...d.comments,
-            {
-              author: profileName,
-              content: newCommentContent,
-              date: "Baru saja",
-            },
-          ],
-        };
+    setIsSubmittingComment(true);
+    try {
+      const { error } = await supabase
+        .from("discussion_comments")
+        .insert({
+          thread_id: activeDiscussionId,
+          profile_id: currentUser.id,
+          content: newCommentContent.trim(),
+        });
+
+      if (error) {
+        console.error("Error posting comment:", error);
+        return;
       }
-      return d;
-    });
 
-    setDiscussions({
-      ...discussions,
-      [selectedCommunityId]: updatedDiscussions,
-    });
+      setNewCommentContent("");
+      await fetchComments(activeDiscussionId);
 
-    setNewCommentContent("");
+      // Update comment count on thread in local state
+      if (selectedCommunityId) {
+        setDiscussions(prev => ({
+          ...prev,
+          [selectedCommunityId]: (prev[selectedCommunityId] || []).map(d =>
+            d.id === activeDiscussionId
+              ? { ...d, comments: [...d.comments, { id: Date.now().toString(), profile_id: currentUser.id, author: profileName, content: newCommentContent.trim(), created_at: new Date().toISOString() }] }
+              : d
+          ),
+        }));
+      }
+    } finally {
+      setIsSubmittingComment(false);
+    }
   };
 
   const handleToggleMemberRole = async (memberId: string) => {
@@ -2317,32 +2388,8 @@ export default function DashboardPage() {
     fileInput.click();
   };
 
-  const getDiscussions = () => {
-    const list = discussions[selectedCommunityId || ""] || [];
-    if (list.length === 0) {
-      return [
-        {
-          id: "d-default-1",
-          title: "Evaluasi Kerja Bakti Minggu Lalu",
-          author: "Sari (Bendahara)",
-          hot: true,
-          comments: [
-            { author: "Budi", content: "Terima kasih untuk warga yang sudah menyumbang tenaga dan konsumsi kemarin. Hasilnya saluran air sudah bersih.", date: "1 hari lalu" },
-            { author: "Adit", content: "Saran untuk kerja bakti berikutnya, kita perlu siapkan obat antinyamuk bubuk.", date: "12 jam lalu" },
-          ],
-        },
-        {
-          id: "d-default-2",
-          title: "Saran Menu Konsumsi Pertemuan Warga",
-          author: "Adit",
-          hot: false,
-          comments: [
-            { author: "Sari", content: "Bagaimana kalau kita pesan nasi kotak sederhana saja?", date: "2 jam lalu" },
-          ],
-        },
-      ];
-    }
-    return list;
+  const getDiscussions = (): ForumThread[] => {
+    return discussions[selectedCommunityId || ""] || [];
   };
 
   const getEvents = () => {
@@ -3806,122 +3853,199 @@ export default function DashboardPage() {
                 </div>
               )}
 
-
               {/* --- VIEW: DISCUSSION FORUM --- */}
               {activeTab === "discussion" && (
                 <div className="space-y-8 animate-fade-in">
-                  <div>
-                    <h1 className="text-3xl font-extrabold tracking-tight text-zinc-900">Forum Diskusi Warga</h1>
-                    <p className="mt-1.5 text-sm text-zinc-500">Wadah diskusi, usulan, dan polling komunitas agar tidak tenggelam.</p>
+                  <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+                    <div>
+                      <h1 className="text-3xl font-extrabold tracking-tight text-zinc-900">Forum Diskusi Warga</h1>
+                      <p className="mt-1.5 text-sm text-zinc-500">Wadah diskusi, usulan, dan pertanyaan komunitas {activeCommunity.name}.</p>
+                    </div>
+                    {getDiscussions().length > 0 && (
+                      <Button
+                        onClick={() => setIsCreateThreadOpen(true)}
+                        className="rounded-xl text-xs font-bold text-white hover:opacity-90 transition-all shadow-sm"
+                        style={{ backgroundColor: activeCommunity.primaryColor }}
+                      >
+                        <Plus className="mr-1.5 h-4 w-4" />
+                        Mulai Diskusi Baru
+                      </Button>
+                    )}
                   </div>
 
-                  <div className="grid gap-6 md:grid-cols-3">
-                    <div className="md:col-span-1 space-y-6">
-                      <Card className="rounded-2xl border border-zinc-200/80 p-5 shadow-sm bg-white space-y-4">
-                        <h3 className="text-sm font-bold text-zinc-900">Buat Utas Baru</h3>
-                        <form onSubmit={handleCreateThread} className="space-y-3">
-                          <Input
-                            required
-                            value={newThreadTitle}
-                            onChange={(e) => setNewThreadTitle(e.target.value)}
-                            placeholder="Tulis topik diskusi..."
-                            className="text-xs"
-                          />
-                          <Button
-                            type="submit"
-                            className="w-full text-xs font-bold text-white rounded-xl h-9 hover:opacity-90"
-                            style={{ backgroundColor: activeCommunity.primaryColor }}
-                          >
-                            Posting Topik
-                          </Button>
-                        </form>
-                      </Card>
+                  {getDiscussions().length === 0 ? (
+                    <div className="max-w-xl mx-auto text-center py-16 px-4 space-y-6 animate-fade-in bg-white border border-zinc-200/80 rounded-2xl shadow-xs mt-6">
+                      <div className="w-20 h-20 bg-indigo-50 border border-indigo-100 rounded-full flex items-center justify-center mx-auto text-3xl shadow-xs animate-bounce">
+                        💬
+                      </div>
+                      <div className="space-y-2">
+                        <h2 className="text-2xl font-extrabold text-zinc-900 tracking-tight">Belum Ada Diskusi</h2>
+                        <p className="text-sm text-zinc-500 max-w-sm mx-auto font-sans leading-relaxed">
+                          Mulai diskusi atau utas baru untuk membahas topik, usulan, atau pertanyaan bersama warga di sini.
+                        </p>
+                      </div>
 
-                      <Card className="rounded-2xl border border-zinc-200/80 p-5 shadow-sm bg-white space-y-4">
-                        <h3 className="text-sm font-bold text-zinc-900">Daftar Utas</h3>
-                        <ul className="space-y-2">
-                          {getDiscussions().map((disc) => (
-                            <li
-                              key={disc.id}
-                              onClick={() => setActiveDiscussionId(disc.id)}
-                              className="p-3 rounded-xl border text-xs font-medium cursor-pointer transition-all"
-                              style={{
-                                backgroundColor: activeDiscussionId === disc.id ? `${activeCommunity.primaryColor}10` : "#fafafa",
-                                borderColor: activeDiscussionId === disc.id ? activeCommunity.primaryColor : "#e4e4e7",
-                              }}
-                            >
-                              <div className="flex items-center gap-1.5 mb-1.5">
-                                {disc.hot && <Flame className="h-3.5 w-3.5 text-orange-500 shrink-0" />}
-                                <span className="font-bold truncate block">{disc.title}</span>
-                              </div>
-                              <div className="text-[10px] text-zinc-400 flex justify-between">
-                                <span>Oleh {disc.author}</span>
-                                <span>{disc.comments.length} Balasan</span>
-                              </div>
-                            </li>
-                          ))}
-                        </ul>
-                      </Card>
+                      <Button
+                        onClick={() => setIsCreateThreadOpen(true)}
+                        className="rounded-xl text-white font-bold text-sm px-8 h-12 shadow-sm hover:opacity-90 hover:scale-[1.01] transition-all"
+                        style={{ backgroundColor: activeCommunity?.primaryColor || "#6366f1" }}
+                      >
+                        <Plus className="mr-2 h-4 w-4 inline" />
+                        Mulai Diskusi Baru
+                      </Button>
                     </div>
-
-                    <div className="md:col-span-2">
-                      {activeDiscussionId ? (
-                        (() => {
-                          const activeDisc = getDiscussions().find((d) => d.id === activeDiscussionId);
-                          if (!activeDisc) return null;
-
-                          return (
-                            <Card className="rounded-2xl border border-zinc-200/80 p-6 shadow-sm bg-white space-y-6 animate-fade-in">
-                              <div className="pb-4 border-b border-zinc-150 space-y-2">
-                                <h3 className="text-lg font-bold text-zinc-905">{activeDisc.title}</h3>
-                                <p className="text-xs text-zinc-405">
-                                  Topik dimulai oleh <span className="font-semibold text-zinc-600">{activeDisc.author}</span>
-                                </p>
-                              </div>
-
-                              <div className="space-y-4 max-h-[300px] overflow-y-auto pr-2">
-                                {activeDisc.comments.length === 0 ? (
-                                  <p className="text-center py-6 text-zinc-400 text-xs font-medium">Belum ada tanggapan. Jadilah yang pertama memberikan respon!</p>
-                                ) : (
-                                  activeDisc.comments.map((comment, index) => (
-                                    <div key={index} className="bg-zinc-50 border border-zinc-100 rounded-xl p-3.5 space-y-1">
-                                      <div className="flex items-center justify-between text-[10px] font-bold text-zinc-500">
-                                        <span>{comment.author}</span>
-                                        <span>{comment.date}</span>
-                                      </div>
-                                      <p className="text-xs text-zinc-700 leading-relaxed">{comment.content}</p>
-                                    </div>
-                                  ))
-                                )}
-                              </div>
-
-                              <form onSubmit={handleAddComment} className="flex gap-2">
-                                <Input
-                                  required
-                                  value={newCommentContent}
-                                  onChange={(e) => setNewCommentContent(e.target.value)}
-                                  placeholder="Ketik tanggapan Anda..."
-                                  className="text-xs h-10"
-                                />
-                                <Button
-                                  type="submit"
-                                  className="text-xs font-bold text-white rounded-xl px-4 h-10 hover:opacity-90"
-                                  style={{ backgroundColor: activeCommunity.primaryColor }}
+                  ) : (
+                    <div className="grid gap-6 lg:grid-cols-3">
+                      {/* Left: Thread List */}
+                      <div className="lg:col-span-1 space-y-5">
+                        <Card className="rounded-2xl border border-zinc-200/80 p-5 shadow-sm bg-white space-y-3">
+                          <h3 className="text-sm font-bold text-zinc-900">💬 Daftar Utas</h3>
+                          {isLoadingDiscussions ? (
+                            <div className="flex justify-center py-6">
+                              <div className="h-5 w-5 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: activeCommunity.primaryColor, borderTopColor: "transparent" }} />
+                            </div>
+                          ) : (
+                            <ul className="space-y-2">
+                              {getDiscussions().map((disc) => (
+                                <li
+                                  key={disc.id}
+                                  onClick={() => {
+                                    setActiveDiscussionId(disc.id);
+                                    fetchComments(disc.id);
+                                  }}
+                                  className="p-3 rounded-xl border text-xs font-medium cursor-pointer transition-all hover:shadow-xs"
+                                  style={{
+                                    backgroundColor: activeDiscussionId === disc.id ? `${activeCommunity.primaryColor}10` : "#fafafa",
+                                    borderColor: activeDiscussionId === disc.id ? activeCommunity.primaryColor : "#e4e4e7",
+                                  }}
                                 >
-                                  Kirim
-                                </Button>
-                              </form>
-                            </Card>
-                          );
-                        })()
-                      ) : (
-                        <Card className="rounded-2xl border border-zinc-200 bg-zinc-50/50 p-12 text-center text-zinc-400 text-sm font-semibold h-full flex flex-col items-center justify-center">
-                          <MessageSquare className="h-8 w-8 mb-2 text-zinc-350" />
-                          Pilih salah satu utas diskusi di sebelah kiri untuk membaca dan mengirim komentar.
+                                  <div className="flex items-start gap-1.5 mb-1.5">
+                                    {disc.comments.length >= 3 && <Flame className="h-3.5 w-3.5 text-orange-500 shrink-0 mt-0.5" />}
+                                    <span className="font-bold line-clamp-2 leading-snug">{disc.title}</span>
+                                  </div>
+                                  <div className="text-[10px] text-zinc-400 flex justify-between mt-1">
+                                    <span className="font-medium text-zinc-500">{disc.author}</span>
+                                    <span>{disc.comments.length} balasan</span>
+                                  </div>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
                         </Card>
-                      )}
+                      </div>
+
+                      {/* Right: Thread Detail */}
+                      <div className="lg:col-span-2">
+                        {activeDiscussionId ? (
+                          (() => {
+                            const activeDisc = getDiscussions().find((d) => d.id === activeDiscussionId);
+                            if (!activeDisc) return null;
+
+                            const timeAgo = (dateStr: string) => {
+                              const diff = Date.now() - new Date(dateStr).getTime();
+                              const minutes = Math.floor(diff / 60000);
+                              const hours = Math.floor(diff / 3600000);
+                              const days = Math.floor(diff / 86400000);
+                              if (days > 0) return `${days} hari lalu`;
+                              if (hours > 0) return `${hours} jam lalu`;
+                              if (minutes > 0) return `${minutes} mnt lalu`;
+                              return "Baru saja";
+                            };
+
+                            return (
+                              <Card className="rounded-2xl border border-zinc-200/80 shadow-sm bg-white animate-fade-in flex flex-col" style={{ minHeight: "480px" }}>
+                                {/* Thread Header */}
+                                <div className="p-6 border-b border-zinc-100 space-y-3">
+                                  <div className="flex items-start justify-between gap-3">
+                                    <h3 className="text-lg font-black text-zinc-900 leading-snug">{activeDisc.title}</h3>
+                                    <button
+                                      onClick={() => { setActiveDiscussionId(null); setActiveDiscussionComments([]); }}
+                                      className="text-zinc-400 hover:text-zinc-600 transition-colors shrink-0 mt-0.5"
+                                    >
+                                      ✕
+                                    </button>
+                                  </div>
+                                  <div className="flex items-center gap-2 text-[11px] text-zinc-500">
+                                    <div className="w-6 h-6 rounded-full flex items-center justify-center text-white text-[10px] font-bold shrink-0" style={{ backgroundColor: activeCommunity.primaryColor }}>
+                                      {activeDisc.author[0]?.toUpperCase()}
+                                    </div>
+                                    <span className="font-semibold text-zinc-700">{activeDisc.author}</span>
+                                    <span className="text-zinc-300">·</span>
+                                    <span>{timeAgo(activeDisc.created_at)}</span>
+                                  </div>
+                                  {/* Thread Content Body */}
+                                  <div className="bg-zinc-50 border border-zinc-100 rounded-xl p-4 mt-2">
+                                    <p className="text-sm text-zinc-700 leading-relaxed whitespace-pre-wrap">{activeDisc.content}</p>
+                                  </div>
+                                </div>
+
+                                {/* Comments Section */}
+                                <div className="flex-1 overflow-y-auto p-6 space-y-3 max-h-[320px]">
+                                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">
+                                    {activeDiscussionComments.length} Balasan
+                                  </p>
+                                  {activeDiscussionComments.length === 0 ? (
+                                    <div className="text-center py-10">
+                                      <p className="text-2xl mb-2">🤫</p>
+                                      <p className="text-xs text-zinc-400 font-medium">Belum ada tanggapan.</p>
+                                      <p className="text-[10px] text-zinc-300 mt-1">Jadilah yang pertama merespons!</p>
+                                    </div>
+                                  ) : (
+                                    activeDiscussionComments.map((comment) => (
+                                      <div key={comment.id} className="flex gap-3">
+                                        <div className="w-7 h-7 rounded-full flex items-center justify-center text-white text-[10px] font-bold shrink-0 mt-0.5" style={{ backgroundColor: `${activeCommunity.primaryColor}cc` }}>
+                                          {comment.author[0]?.toUpperCase()}
+                                        </div>
+                                        <div className="flex-1 bg-zinc-50 border border-zinc-100 rounded-xl p-3 space-y-1">
+                                          <div className="flex items-center justify-between">
+                                            <span className="text-[11px] font-bold text-zinc-800">{comment.author}</span>
+                                            <span className="text-[10px] text-zinc-400">{timeAgo(comment.created_at)}</span>
+                                          </div>
+                                          <p className="text-xs text-zinc-700 leading-relaxed">{comment.content}</p>
+                                        </div>
+                                      </div>
+                                    ))
+                                  )}
+                                </div>
+
+                                {/* Comment Input */}
+                                <div className="p-4 border-t border-zinc-100">
+                                  <form onSubmit={handleAddComment} className="flex gap-2 items-center">
+                                    <div className="w-7 h-7 rounded-full flex items-center justify-center text-white text-[10px] font-bold shrink-0" style={{ backgroundColor: activeCommunity.primaryColor }}>
+                                      {profileName[0]?.toUpperCase()}
+                                    </div>
+                                    <Input
+                                      required
+                                      value={newCommentContent}
+                                      onChange={(e) => setNewCommentContent(e.target.value)}
+                                      placeholder="Tulis tanggapan Anda..."
+                                      className="text-xs h-10 flex-1"
+                                    />
+                                    <Button
+                                      type="submit"
+                                      disabled={isSubmittingComment}
+                                      className="text-xs font-bold text-white rounded-xl px-4 h-10 hover:opacity-90 shrink-0"
+                                      style={{ backgroundColor: activeCommunity.primaryColor }}
+                                    >
+                                      {isSubmittingComment ? "..." : "Kirim"}
+                                    </Button>
+                                  </form>
+                                </div>
+                              </Card>
+                            );
+                          })()
+                        ) : (
+                          <Card className="rounded-2xl border border-zinc-200 bg-zinc-50/50 text-center text-zinc-400 text-sm font-semibold flex flex-col items-center justify-center gap-3" style={{ minHeight: "480px" }}>
+                            <MessageSquare className="h-10 w-10 text-zinc-300" />
+                            <div>
+                              <p className="font-bold text-zinc-500">Pilih topik diskusi</p>
+                              <p className="text-xs text-zinc-400 mt-1 font-normal">Klik salah satu utas di sebelah kiri untuk membaca dan berdiskusi.</p>
+                            </div>
+                          </Card>
+                        )}
+                      </div>
                     </div>
-                  </div>
+                  )}
                 </div>
               )}
 
@@ -4886,6 +5010,71 @@ export default function DashboardPage() {
                   style={{ backgroundColor: activeCommunity.primaryColor }}
                 >
                   {isCreatingEvent ? "Menyimpan..." : "Buat Agenda"}
+                </Button>
+              </div>
+            </form>
+          </Card>
+        </div>
+      )}
+      {/* 7. Modal: Buat Utas Diskusi Baru */}
+      {isCreateThreadOpen && activeCommunity && (
+        <div className="fixed inset-0 z-50 overflow-y-auto flex items-start justify-center bg-black/40 backdrop-blur-xs p-4">
+          <Card className="w-full max-w-lg bg-white p-0 rounded-2xl border border-zinc-200 shadow-xl relative animate-fade-in my-8 overflow-hidden">
+            {/* Header */}
+            <div className="p-6 pb-4 border-b border-zinc-100">
+              <button onClick={() => setIsCreateThreadOpen(false)} className="absolute right-4 top-4 text-zinc-400 hover:text-zinc-650">
+                <X className="h-5 w-5" />
+              </button>
+              <h2 className="text-xl font-bold text-zinc-900">Mulai Diskusi Baru</h2>
+              <p className="text-xs text-zinc-500 mt-0.5 font-sans">Mulai topik pembahasan baru bersama warga komunitas.</p>
+            </div>
+
+            <form onSubmit={handleCreateThread} className="p-6 space-y-4">
+              {/* Judul Topik */}
+              <div className="space-y-1.5">
+                <Label htmlFor="thread-title">Judul Topik <span className="text-red-500">*</span></Label>
+                <Input
+                  id="thread-title"
+                  required
+                  value={newThreadTitle}
+                  onChange={(e) => setNewThreadTitle(e.target.value)}
+                  placeholder="Contoh: Usulan Vendor Kaos, Laporan Lampu Mati di Blok C"
+                  className="rounded-xl h-10"
+                />
+              </div>
+
+              {/* Isi Konten */}
+              <div className="space-y-1.5">
+                <Label htmlFor="thread-content">Detail Pembahasan <span className="text-red-500">*</span></Label>
+                <textarea
+                  id="thread-content"
+                  required
+                  rows={5}
+                  className="flex w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-sans"
+                  value={newThreadContent}
+                  onChange={(e) => setNewThreadContent(e.target.value)}
+                  placeholder="Jelaskan detail topik yang ingin didiskusikan agar warga lain memahaminya..."
+                />
+              </div>
+
+              {/* Submit */}
+              <div className="pt-2 flex gap-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setIsCreateThreadOpen(false)}
+                  disabled={isSubmittingThread}
+                  className="flex-1 rounded-xl h-11 text-sm font-semibold"
+                >
+                  Batal
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={isSubmittingThread}
+                  className="flex-1 h-11 rounded-xl text-white font-bold text-sm hover:opacity-90"
+                  style={{ backgroundColor: activeCommunity.primaryColor }}
+                >
+                  {isSubmittingThread ? "Memposting..." : "Posting Topik"}
                 </Button>
               </div>
             </form>
