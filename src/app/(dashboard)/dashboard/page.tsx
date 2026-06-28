@@ -911,6 +911,10 @@ export default function DashboardPage() {
   const handleRedirectToInvoice = async () => {
     if (!selectedCommunityId || !currentUser) return;
 
+    // Buka tab baru SEBELUM fetch (harus sinkron saat user klik)
+    // agar tidak diblokir popup blocker browser di production/HTTPS
+    const newTab = window.open("", "_blank");
+
     try {
       const billId = selectedBillToPay?.id || null;
       let amount = 50000;
@@ -951,13 +955,19 @@ export default function DashboardPage() {
       });
 
       if (!res.ok) {
+        if (newTab) newTab.close();
         throw new Error("Gagal membuat link pembayaran Xendit.");
       }
 
       const data = await res.json();
       if (data.invoice_url) {
         setIsPaymentOpen(false);
-        window.open(data.invoice_url, "_blank");
+        // Arahkan tab yang sudah dibuka ke URL invoice
+        if (newTab) {
+          newTab.location.href = data.invoice_url;
+        } else {
+          window.open(data.invoice_url, "_blank");
+        }
 
         Swal.fire({
           title: "Pembayaran Dibuka",
@@ -965,6 +975,8 @@ export default function DashboardPage() {
           icon: "info",
           confirmButtonColor: activeCommunity?.primaryColor || "#6366f1",
         });
+      } else {
+        if (newTab) newTab.close();
       }
     } catch (err: any) {
       console.error(err);
