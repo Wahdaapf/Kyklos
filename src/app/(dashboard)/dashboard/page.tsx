@@ -962,19 +962,21 @@ export default function DashboardPage() {
       const data = await res.json();
       if (data.invoice_url) {
         setIsPaymentOpen(false);
-        // Arahkan tab yang sudah dibuka ke URL invoice
-        if (newTab) {
-          newTab.location.href = data.invoice_url;
-        } else {
-          window.open(data.invoice_url, "_blank");
-        }
 
-        Swal.fire({
-          title: "Pembayaran Dibuka",
-          text: "Halaman pembayaran Xendit telah dibuka di tab baru. Silakan selesaikan pembayaran Anda di sana.",
-          icon: "info",
-          confirmButtonColor: activeCommunity?.primaryColor || "#6366f1",
-        });
+        if (newTab && !newTab.closed) {
+          // Tab baru berhasil dibuka → arahkan ke invoice
+          newTab.location.href = data.invoice_url;
+          Swal.fire({
+            title: "Pembayaran Dibuka",
+            text: "Halaman pembayaran Xendit telah dibuka di tab baru. Silakan selesaikan pembayaran Anda di sana.",
+            icon: "info",
+            confirmButtonColor: activeCommunity?.primaryColor || "#6366f1",
+          });
+        } else {
+          // Popup diblokir → redirect halaman saat ini ke Xendit
+          // Xendit akan redirect balik ke success_redirect_url setelah bayar
+          window.location.href = data.invoice_url;
+        }
       } else {
         if (newTab) newTab.close();
       }
