@@ -903,7 +903,22 @@ export default function DashboardPage() {
 
     try {
       const billId = selectedBillToPay?.id || null;
-      const amount = selectedBillToPay ? Number(selectedBillToPay.amount) : 50000;
+      let amount = 50000;
+      if (selectedBillToPay) {
+        amount = Number(selectedBillToPay.amount);
+      } else {
+        const communityPockets = pockets[selectedCommunityId] || [];
+        const duesPocket = communityPockets.find(p => p.name.toLowerCase().includes("dues") || p.name.toLowerCase().includes("iuran")) || communityPockets[0];
+        if (duesPocket) {
+          const match = duesPocket.name.match(/Rp\s*([\d.]+)/i);
+          if (match && match[1]) {
+            const parsedVal = parseInt(match[1].replace(/\./g, ""), 10);
+            if (!isNaN(parsedVal)) {
+              amount = parsedVal;
+            }
+          }
+        }
+      }
       const description = selectedBillToPay
         ? `${selectedBillToPay.title} oleh ${profileName}`
         : `Iuran bulanan kas ${activeCommunity?.name} oleh ${profileName}`;
@@ -2145,12 +2160,23 @@ export default function DashboardPage() {
       const dueDate = getLastDayOfMonth(nextYear, nextDetails.month);
 
       // 4. Build bills array
+      let defaultDuesAmount = 50000;
+      if (duesPocket && duesPocket.name) {
+        const match = duesPocket.name.match(/Rp\s*([\d.]+)/i);
+        if (match && match[1]) {
+          const parsedVal = parseInt(match[1].replace(/\./g, ""), 10);
+          if (!isNaN(parsedVal)) {
+            defaultDuesAmount = parsedVal;
+          }
+        }
+      }
+
       const billsToInsert = cms.map((cm) => ({
         community_id: selectedCommunityId,
         profile_id: cm.profile_id,
         pocket_id: pocketId,
         title: `Iuran Bulanan ${nextMonthName} ${nextYear}`,
-        amount: 50000,
+        amount: defaultDuesAmount,
         due_date: dueDate,
         status: "unpaid"
       }));
@@ -2329,14 +2355,60 @@ export default function DashboardPage() {
     : 0;
 
   const activeCommunityMembers = activeCommunity ? (members[activeCommunity.id] || []) : [];
-  const myMemberInfo = activeCommunityMembers.find((m) => m.name === profileName);
-  const myRole = myMemberInfo?.role || activeCommunity?.role || "Member";
-  const myIuranPaid = myMemberInfo?.iuranStatus === "Lunas";
+  
+  // Dynamic mapped members status based on real unpaid dues bills
+  const mappedMembersWithStatus = activeCommunity ? activeCommunityMembers.map((m) => {
+    const hasUnpaid = communityDuesBills.some((bill) => bill.profile_id === m.id);
+    return {
+      ...m,
+      iuranStatus: hasUnpaid ? ("Menunggak" as const) : ("Lunas" as const),
+    };
+  }) : [];
 
-  const totalPaidMembers = activeCommunityMembers.filter((m) => m.iuranStatus === "Lunas").length;
-  const payPercentage = activeCommunityMembers.length > 0
-    ? Math.round((totalPaidMembers / activeCommunityMembers.length) * 100)
+  const myMemberInfo = mappedMembersWithStatus.find((m) => m.name === profileName);
+  const myRole = myMemberInfo?.role || activeCommunity?.role || "Member";
+  const myIuranPaid = myMemberInfo ? myMemberInfo.iuranStatus === "Lunas" : true;
+
+  const totalPaidMembers = mappedMembersWithStatus.filter((m) => m.iuranStatus === "Lunas").length;
+  const payPercentage = mappedMembersWithStatus.length > 0
+    ? Math.round((totalPaidMembers / mappedMembersWithStatus.length) * 100)
     : 0;
+
+  const monthlyInflow = (() => {
+    if (!activeCommunity) return 0;
+    const commTxs = transactions[activeCommunity.id] || [];
+    const now = new Date();
+    const currentMonthNum = now.getMonth();
+    const currentYear = now.getFullYear();
+
+    return commTxs.reduce((acc, curr) => {
+      if (curr.type !== "in") return acc;
+      
+      const dateStr = curr.date.toLowerCase();
+      if (dateStr.includes("hari ini") || dateStr.includes("kemarin")) {
+        return acc + curr.amount;
+      }
+      
+      const monthsIndo = ["jan", "feb", "mar", "apr", "mei", "jun", "jul", "agu", "sep", "okt", "nov", "des"];
+      const monthsEng = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+      
+      const currentMonthIndo = monthsIndo[currentMonthNum];
+      const currentMonthEng = monthsEng[currentMonthNum];
+      
+      const hasCurrentMonth = dateStr.includes(currentMonthIndo) || dateStr.includes(currentMonthEng);
+      const hasYear = dateStr.match(/\d{4}/);
+      if (hasYear) {
+        if (hasCurrentMonth && dateStr.includes(currentYear.toString())) {
+          return acc + curr.amount;
+        }
+        return acc;
+      }
+      if (hasCurrentMonth) {
+        return acc + curr.amount;
+      }
+      return acc;
+    }, 0);
+  })();
 
   // --- Premium Loading State ---
   if (isLoading) {
@@ -2871,7 +2943,7 @@ export default function DashboardPage() {
                         </div>
                         <div className="flex items-center gap-1.5 text-xs font-medium" style={{ color: activeCommunity.primaryColor }}>
                           <TrendingUp className="h-4 w-4" />
-                          <span>+Rp 350.000 masuk bulan ini</span>
+                          <span>+Rp {monthlyInflow.toLocaleString("id-ID")} masuk bulan ini</span>
                         </div>
                       </Card>
 
@@ -3206,7 +3278,21 @@ export default function DashboardPage() {
                         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                           <div>
                             <h3 className="text-base font-bold text-zinc-900">Daftar Tagihan Iuran Warga</h3>
-                            <p className="text-xs text-zinc-400">Kas wajib bulanan sebesar **Rp 50.000 / KK**</p>
+                            {(() => {
+                              const duesPocket = (pockets[activeCommunity.id] || []).find((p) =>
+                                p.name.toLowerCase().includes("dues") || p.name.toLowerCase().includes("iuran")
+                              );
+                              let amountText = "50.000";
+                              if (duesPocket) {
+                                const match = duesPocket.name.match(/Rp\s*([\d.]+)/i);
+                                if (match && match[1]) {
+                                  amountText = match[1];
+                                }
+                              }
+                              return (
+                                <p className="text-xs text-zinc-400">Kas wajib bulanan sebesar **Rp {amountText} / KK**</p>
+                              );
+                            })()}
                           </div>
                           {myRole === "Admin" && shouldShowCreateDuesButton() && (
                             <Button
@@ -4630,7 +4716,22 @@ export default function DashboardPage() {
               <div className="text-center space-y-1">
                 <span className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">Total Tagihan</span>
                 <h3 className="text-2xl font-black text-zinc-900">
-                  Rp {selectedBillToPay ? Number(selectedBillToPay.amount).toLocaleString("id-ID") : "50.000"}
+                  Rp {(() => {
+                    const duesPocket = (pockets[activeCommunity.id] || []).find((p) =>
+                      p.name.toLowerCase().includes("dues") || p.name.toLowerCase().includes("iuran")
+                    );
+                    let amountVal = 50000;
+                    if (duesPocket) {
+                      const match = duesPocket.name.match(/Rp\s*([\d.]+)/i);
+                      if (match && match[1]) {
+                        const parsed = parseInt(match[1].replace(/\./g, ""), 10);
+                        if (!isNaN(parsed)) amountVal = parsed;
+                      }
+                    }
+                    return selectedBillToPay
+                      ? Number(selectedBillToPay.amount).toLocaleString("id-ID")
+                      : amountVal.toLocaleString("id-ID");
+                  })()}
                 </h3>
                 <p className="text-xs text-zinc-500 font-sans">
                   {selectedBillToPay ? selectedBillToPay.title : `Iuran Kas Wajib ${activeCommunity.name}`}
