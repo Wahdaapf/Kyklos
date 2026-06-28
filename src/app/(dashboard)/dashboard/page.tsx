@@ -1497,6 +1497,29 @@ export default function DashboardPage() {
     }
   };
 
+  const handleDeletePocket = async (pocketId: string) => {
+    if (!selectedCommunityId) return;
+    const confirmed = window.confirm("Yakin ingin menghapus kantong dana ini? Data transaksi terkait tidak akan terhapus.");
+    if (!confirmed) return;
+    try {
+      const { error } = await supabase
+        .from("fund_pockets")
+        .delete()
+        .eq("id", pocketId);
+      if (error) {
+        alert(`Gagal menghapus kantong: ${error.message}`);
+        return;
+      }
+      setPockets({
+        ...pockets,
+        [selectedCommunityId]: (pockets[selectedCommunityId] || []).filter((p) => p.id !== pocketId),
+      });
+    } catch (err: any) {
+      console.error(err);
+      alert(`Terjadi kesalahan: ${err.message}`);
+    }
+  };
+
   const handleAddPocket = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedCommunityId || !newPocketType) return;
@@ -2862,12 +2885,14 @@ export default function DashboardPage() {
               <nav className="space-y-1">
                 {/* Derived: show Arisan only if an arisan pocket exists */}
                 {(() => {
-                  const communityPockets = pockets[selectedCommunityId || ""] || [];
+                  const communityPockets = pockets[activeCommunity.id] || [];
                   const hasArisanPocket = communityPockets.some((p) =>
                     p.name.toLowerCase().includes("arisan")
                   );
                   const hasEventPocket = communityPockets.some((p) =>
-                    p.name.toLowerCase().includes("event") || p.name.toLowerCase().includes("acara")
+                    p.name.toLowerCase().includes("event") ||
+                    p.name.toLowerCase().includes("acara") ||
+                    p.name.toLowerCase().includes("fund")
                   );
                   return (
                     <>
@@ -3306,13 +3331,19 @@ export default function DashboardPage() {
                       <div className="space-y-4">
                         <div className="flex items-center justify-between">
                           <h3 className="text-base font-bold text-zinc-900">Daftar Kantong Dana (Pockets)</h3>
-                          {myRole === "Admin" && (pockets[activeCommunity.id] || []).length < 4 && (
+                          {myRole === "Admin" && (() => {
+                              const cp = pockets[activeCommunity.id] || [];
+                              const hasDues = cp.some((p) => p.name.toLowerCase().includes("dues") || p.name.toLowerCase().includes("iuran"));
+                              const hasArisan = cp.some((p) => p.name.toLowerCase().includes("arisan"));
+                              const hasEvent = cp.some((p) => p.name.toLowerCase().includes("event") || p.name.toLowerCase().includes("acara") || p.name.toLowerCase().includes("fund"));
+                              return !hasDues || !hasArisan || !hasEvent;
+                            })() && (
                             <Button
                               onClick={() => {
                                 const communityPockets = pockets[activeCommunity.id] || [];
                                 const hasArisan = communityPockets.some((p) => p.name.toLowerCase().includes("arisan"));
                                 const hasDues = communityPockets.some((p) => p.name.toLowerCase().includes("dues") || p.name.toLowerCase().includes("iuran"));
-                                const hasEvent = communityPockets.some((p) => p.name.toLowerCase().includes("event") || p.name.toLowerCase().includes("acara"));
+                                const hasEvent = communityPockets.some((p) => p.name.toLowerCase().includes("event") || p.name.toLowerCase().includes("acara") || p.name.toLowerCase().includes("fund"));
 
                                 let firstAvail = "";
                                 if (!hasDues) firstAvail = "iuran";
@@ -3332,9 +3363,18 @@ export default function DashboardPage() {
                         </div>
                         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                           {(pockets[activeCommunity.id] || []).map((p) => (
-                            <div key={p.id} className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm flex flex-col justify-between min-h-[120px]">
+                            <div key={p.id} className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm flex flex-col justify-between min-h-[120px] group relative">
+                              {myRole === "Admin" && (
+                                <button
+                                  onClick={() => handleDeletePocket(p.id)}
+                                  title="Hapus kantong ini"
+                                  className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity text-zinc-300 hover:text-red-500"
+                                >
+                                  <X className="h-3.5 w-3.5" />
+                                </button>
+                              )}
                               <div>
-                                <span className="text-xs font-bold text-zinc-500 uppercase tracking-wide block truncate">{p.name}</span>
+                                <span className="text-xs font-bold text-zinc-500 uppercase tracking-wide block truncate pr-5">{p.name}</span>
                                 <div className="text-xl font-black text-zinc-900 mt-2">
                                   Rp {p.balance.toLocaleString("id-ID")}
                                 </div>
