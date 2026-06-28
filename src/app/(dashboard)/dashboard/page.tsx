@@ -409,7 +409,9 @@ export default function DashboardPage() {
   const [newCommentContent, setNewCommentContent] = useState("");
 
   // Wallet Sub-menus
-  const [walletTab, setWalletTab] = useState<"pockets" | "iuran">("pockets");
+  const [walletTab, setWalletTab] = useState<"pockets" | "iuran" | "my_iuran">("pockets");
+  const [myUnpaidDues, setMyUnpaidDues] = useState<any[]>([]);
+  const [selectedBillToPay, setSelectedBillToPay] = useState<any | null>(null);
 
   const activeCommunity = communities.find((c) => c.id === selectedCommunityId);
 
@@ -750,6 +752,34 @@ export default function DashboardPage() {
     }
   };
 
+  const fetchMyUnpaidDues = async (communityId: string, userId: string) => {
+    if (!communityId || !userId) return;
+    try {
+      const { data, error } = await supabase
+        .from("dues_bills")
+        .select(`
+          id,
+          title,
+          amount,
+          status,
+          due_date,
+          pocket_id
+        `)
+        .eq("community_id", communityId)
+        .eq("profile_id", userId)
+        .eq("status", "unpaid")
+        .order("due_date", { ascending: true });
+
+      if (error) {
+        console.error("Error fetching unpaid dues bills:", error);
+      } else {
+        setMyUnpaidDues(data || []);
+      }
+    } catch (err) {
+      console.error("Error in fetchMyUnpaidDues:", err);
+    }
+  };
+
   // Update active community details when user switches
   useEffect(() => {
     if (selectedCommunityId) {
@@ -758,8 +788,11 @@ export default function DashboardPage() {
       setActiveDiscussionId(null);
       fetchArisanRounds(selectedCommunityId);
       fetchEvents(selectedCommunityId, currentUser?.id);
+      if (currentUser?.id) {
+        fetchMyUnpaidDues(selectedCommunityId, currentUser.id);
+      }
     }
-  }, [selectedCommunityId]);
+  }, [selectedCommunityId, currentUser]);
 
   const handleConfirmMulaiArisan = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1491,12 +1524,20 @@ export default function DashboardPage() {
     if (!selectedCommunityId || !currentUser) return;
 
     try {
-      // Find the recurring dues pocket in the community
+      // Find the recurring dues pocket or the pocket associated with the specific bill
       const communityPockets = pockets[selectedCommunityId] || [];
-      const duesPocket = communityPockets.find(p => p.name.toLowerCase().includes("dues") || p.name.toLowerCase().includes("iuran")) || communityPockets[0];
+      let duesPocket = communityPockets.find(p => p.name.toLowerCase().includes("dues") || p.name.toLowerCase().includes("iuran")) || communityPockets[0];
+      
+      if (selectedBillToPay && selectedBillToPay.pocket_id) {
+        duesPocket = communityPockets.find(p => p.id === selectedBillToPay.pocket_id) || duesPocket;
+      }
+
+      const amount = selectedBillToPay ? Number(selectedBillToPay.amount) : 50000;
+      const description = selectedBillToPay 
+        ? `${selectedBillToPay.title} oleh ${profileName} (Lunas)`
+        : `Iuran bulanan masuk dari ${profileName} (Lunas)`;
 
       if (duesPocket) {
-        const amount = 50000;
         const newBal = duesPocket.balance + amount;
 
         // 1. Insert transaction
@@ -1508,7 +1549,7 @@ export default function DashboardPage() {
             profile_id: currentUser.id,
             type: "income",
             amount: amount,
-            description: `Iuran bulanan masuk dari ${profileName} (Lunas)`,
+            description: description,
             status: "success",
           })
           .select(`
@@ -1558,19 +1599,44 @@ export default function DashboardPage() {
         }
       }
 
-      // Update member payment status
-      const updatedMembers = (members[selectedCommunityId] || []).map((m) => {
-        if (m.name === profileName) {
-          return { ...m, iuranStatus: "Lunas" as const };
+      // Update bill in DB if a specific bill was being paid
+      if (selectedBillToPay) {
+        const { error: billUpdateErr } = await supabase
+          .from("dues_bills")
+          .update({ status: "paid" })
+          .eq("id", selectedBillToPay.id);
+
+        if (billUpdateErr) {
+          console.error("Gagal memperbarui status tagihan iuran:", billUpdateErr);
         }
-        return m;
-      });
-      setMembers({
-        ...members,
-        [selectedCommunityId]: updatedMembers,
-      });
+
+        // Refresh unpaid dues list
+        await fetchMyUnpaidDues(selectedCommunityId, currentUser.id);
+
+        // If this is an arisan round bill, let's refresh arisan rounds/bills from DB
+        await fetchArisanRounds(selectedCommunityId);
+      }
+
+      // Update member payment status (if paying monthly/recurring dues)
+      const isRecurringBill = selectedBillToPay 
+        ? (selectedBillToPay.title.toLowerCase().includes("perdana") || selectedBillToPay.title.toLowerCase().includes("bulanan") || selectedBillToPay.title.toLowerCase().includes("recurring"))
+        : true;
+
+      if (isRecurringBill) {
+        const updatedMembers = (members[selectedCommunityId] || []).map((m) => {
+          if (m.name === profileName) {
+            return { ...m, iuranStatus: "Lunas" as const };
+          }
+          return m;
+        });
+        setMembers({
+          ...members,
+          [selectedCommunityId]: updatedMembers,
+        });
+      }
 
       setIsPaymentOpen(false);
+      setSelectedBillToPay(null);
     } catch (err) {
       console.error(err);
     }
@@ -2760,6 +2826,16 @@ export default function DashboardPage() {
                     >
                       Pelacakan Iuran Anggota
                     </button>
+                    <button
+                      onClick={() => setWalletTab("my_iuran")}
+                      className="pb-3 transition-colors border-b-2"
+                      style={{
+                        borderColor: walletTab === "my_iuran" ? activeCommunity.primaryColor : "transparent",
+                        color: walletTab === "my_iuran" ? activeCommunity.primaryColor : "#71717a",
+                      }}
+                    >
+                      Iuran Saya
+                    </button>
                   </div>
 
                   {/* Sub-tab 1: Pockets & Ledger */}
@@ -2951,6 +3027,76 @@ export default function DashboardPage() {
                             </tbody>
                           </table>
                         </div>
+                      </Card>
+                    </div>
+                  )}
+
+                  {/* Sub-tab 3: Iuran Saya */}
+                  {walletTab === "my_iuran" && (
+                    <div className="space-y-6">
+                      <Card className="rounded-2xl border border-zinc-200/80 p-6 shadow-sm bg-white">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-zinc-100 pb-4">
+                          <div>
+                            <h3 className="text-base font-bold text-zinc-900">Tagihan Iuran Saya</h3>
+                            <p className="text-xs text-zinc-400 mt-0.5 font-sans">Daftar semua tagihan iuran Anda yang belum dibayar</p>
+                          </div>
+                        </div>
+
+                        {myUnpaidDues.length === 0 ? (
+                          <div className="text-center py-12 space-y-3">
+                            <div className="h-12 w-12 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto text-xl font-bold border border-emerald-100">
+                              🎉
+                            </div>
+                            <div>
+                              <p className="text-sm font-bold text-zinc-800">Semua Iuran Lunas!</p>
+                              <p className="text-xs text-zinc-400 font-sans">Tidak ada tagihan iuran tertunggak untuk akun Anda saat ini.</p>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="mt-6 divide-y divide-zinc-100">
+                            {myUnpaidDues.map((bill) => (
+                              <div key={bill.id} className="flex flex-col sm:flex-row sm:items-center justify-between py-4 gap-4">
+                                <div className="flex items-start gap-3">
+                                  <div className="grid h-10 w-10 place-items-center rounded-xl bg-amber-50 text-amber-700 border border-amber-100 shrink-0">
+                                    <Clock className="h-5 w-5" />
+                                  </div>
+                                  <div>
+                                    <h4 className="text-sm font-bold text-zinc-900">{bill.title}</h4>
+                                    <p className="text-xs text-zinc-400 mt-0.5 font-sans">
+                                      Jatuh Tempo: <span className="font-semibold text-zinc-600">
+                                        {bill.due_date ? new Date(bill.due_date).toLocaleDateString("id-ID", {
+                                          day: "numeric",
+                                          month: "short",
+                                          year: "numeric",
+                                        }) : "-"}
+                                      </span>
+                                    </p>
+                                  </div>
+                                </div>
+                                <div className="flex items-center justify-between sm:justify-end gap-6 w-full sm:w-auto">
+                                  <div className="text-left sm:text-right">
+                                    <span className="text-[10px] font-bold text-red-600 bg-red-50 border border-red-100 rounded-full px-2.5 py-0.5 block w-max sm:ml-auto">
+                                      Belum Bayar
+                                    </span>
+                                    <span className="text-base font-black text-zinc-900 block mt-1">
+                                      Rp {bill.amount.toLocaleString("id-ID")}
+                                    </span>
+                                  </div>
+                                  <Button
+                                    onClick={() => {
+                                      setSelectedBillToPay(bill);
+                                      setIsPaymentOpen(true);
+                                    }}
+                                    className="rounded-xl text-white font-bold text-xs px-4 h-9 shadow-sm hover:opacity-90 transition-opacity whitespace-nowrap"
+                                    style={{ backgroundColor: activeCommunity.primaryColor }}
+                                  >
+                                    Bayar
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </Card>
                     </div>
                   )}
@@ -4064,7 +4210,7 @@ export default function DashboardPage() {
                 <CreditCard className="h-5 w-5 text-indigo-400" />
                 <span className="font-bold text-sm tracking-wide">Secure Checkout</span>
               </div>
-              <button onClick={() => setIsPaymentOpen(false)} className="text-zinc-400 hover:text-white">
+              <button onClick={() => { setIsPaymentOpen(false); setSelectedBillToPay(null); }} className="text-zinc-400 hover:text-white">
                 <X className="h-4 w-4" />
               </button>
             </div>
@@ -4072,8 +4218,12 @@ export default function DashboardPage() {
             <div className="p-6 space-y-6">
               <div className="text-center space-y-1">
                 <span className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">Metode Pembayaran Instan</span>
-                <h3 className="text-xl font-bold text-zinc-900">Rp 50.000</h3>
-                <p className="text-xs text-zinc-555">Iuran Kas Wajib {activeCommunity.name}</p>
+                <h3 className="text-xl font-bold text-zinc-900">
+                  Rp {selectedBillToPay ? selectedBillToPay.amount.toLocaleString("id-ID") : "50.000"}
+                </h3>
+                <p className="text-xs text-zinc-555">
+                  {selectedBillToPay ? selectedBillToPay.title : `Iuran Kas Wajib ${activeCommunity.name}`}
+                </p>
               </div>
 
               <div className="space-y-4">
